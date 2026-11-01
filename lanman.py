@@ -211,12 +211,15 @@ def scan():
                     d["router"] = rh
                 else:
                     d.pop("router", None)
-            host = next((names[ip] for ip in g["ips"] if names.get(ip) and names[ip] != "_gateway"
-                         and names[ip].lower() not in ambiguous), None)
-            if host:
-                d["hostname"] = host
-            elif d.get("hostname", "").lower() in ambiguous:
+            if any((names.get(ip) or "").lower() in ambiguous for ip in g["ips"]):
+                # the gateway gives this IP a name shared with others: its DNS is unreliable here
+                # (typically clients of a MAC-NAT range extender) -> drop DNS names for a day
+                d["dns_shared"] = now
                 d.pop("hostname", None)
+            elif now - d.get("dns_shared", 0) > 86400:
+                host = next((names[ip] for ip in g["ips"] if names.get(ip) and names[ip] != "_gateway"), None)
+                if host:
+                    d["hostname"] = host
         for key, d in devices.items():
             if key not in groups:
                 d["ping"] = False
@@ -345,6 +348,9 @@ def public(key, d):
     vendor = None if d.get("via_router") else vendors.lookup(d.get("mac"))
     out.update(identify.classify(d, vendor))
     out["link"], out["link_source"] = identify.link_guess(d, out["type"], vendor, state["host_wired"], out.get("model"))
+    if d.get("dns_shared") and time.time() - d["dns_shared"] < 86400 and not d.get("is_gateway"):
+        out["note"] = ("il DNS del router dà a questo IP un nome condiviso con altri dispositivi: "
+                       "probabilmente è collegato tramite un range extender (nomi DNS ignorati)")
     if d.get("via_router"):
         out["note"] = "il router risponde per suo conto (proxy-ARP): MAC e produttore sono quelli del router"
     p = d.get("probe") or {}
