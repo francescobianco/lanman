@@ -74,9 +74,11 @@ def gateway(iface):
     return m.group(1) if m else None
 
 
-def ping(ip):
-    r = subprocess.run(["ping", "-c", "1", "-W", "1", "-n", "-q", ip],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def ping(ip, patient=False):
+    """Quick single ping; patient=True gives sleeping phones (Wi-Fi power save,
+    replies after up to ~1 s) several chances."""
+    cmd = ["ping", "-c", "4", "-i", "0.5", "-W", "3"] if patient else ["ping", "-c", "1", "-W", "1"]
+    r = subprocess.run(cmd + ["-n", "-q", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return r.returncode == 0
 
 
@@ -122,6 +124,13 @@ def scan():
     hosts = [str(h) for h in net.hosts()]
     with ThreadPoolExecutor(max_workers=64) as ex:
         alive = {ip for ip, ok in zip(hosts, ex.map(ping, hosts)) if ok}
+    # second, patient pass on devices seen in the last day that didn't answer the quick ping
+    with lock:
+        sleepy = sorted({ip for d in devices.values() if now - d.get("last_seen", 0) < 86400
+                         for ip in (d.get("ips") or [d.get("ip")]) if ip} - alive)
+    if sleepy:
+        with ThreadPoolExecutor(max_workers=32) as ex:
+            alive |= {ip for ip, ok in zip(sleepy, ex.map(lambda ip: ping(ip, True), sleepy)) if ok}
     neigh, fresh = neighbours(iface)
     mymac = own_mac(iface)
     mine = [str(i.ip) for i in own_ips(iface) if i.ip in net]
@@ -231,6 +240,7 @@ def scan():
                 host = next((names[ip] for ip in g["ips"] if names.get(ip) and names[ip] != "_gateway"), None)
                 if host:
                     d["hostname"] = host
+        link_aliases()
         for key, d in devices.items():
             d["present"] = key in groups  # seen in this round
             if not d["present"]:
@@ -239,6 +249,28 @@ def scan():
         state["last_scan"] = now
         save()
     state["scanning"] = False
+
+
+def link_aliases():
+    """Phones use a different private MAC per Wi-Fi network (e.g. box vs extender SSID):
+    records with private MACs and the same DHCP name are one device. The most recently
+    seen one is primary; the others get alias_of and are hidden from the list. (lock held)"""
+    by_name = {}
+    for key, d in devices.items():
+        name = ((d.get("dhcp") or {}).get("hostname") or "").lower()
+        if name and identify.is_random_mac(d.get("mac")):
+            by_name.setdefault(name, []).append(key)
+        d.pop("alias_of", None)
+        d.pop("aliases", None)
+    for keys in by_name.values():
+        if len(keys) < 2:
+            continue
+        keys.sort(key=lambda k: devices[k].get("last_seen", 0), reverse=True)
+        primary = devices[keys[0]]
+        primary["aliases"] = [{"mac": devices[k].get("mac"), "ip": devices[k].get("ip"),
+                               "last_seen": devices[k].get("last_seen")} for k in keys[1:]]
+        for k in keys[1:]:
+            devices[k]["alias_of"] = keys[0]
 
 
 def probe():
@@ -328,6 +360,8 @@ def events():
     with lock:
         quiet = state.pop("quiet_events", False)  # fresh install: learn the network silently
         for key, d in devices.items():
+            if d.get("alias_of"):
+                continue  # same phone under another private MAC: its primary record speaks for it
             prev = d.get("notified")
             if d.get("present"):
                 cur = "online"
@@ -465,7 +499,7 @@ class Handler(BaseHTTPRequestHandler):
                     "probing": state["probing"],
                     "types": identify.TYPES,
                     "ntfy": notify.target(DATA_DIR),
-                    "devices": [public(k, d) for k, d in devices.items()],
+                    "devices": [public(k, d) for k, d in devices.items() if not d.get("alias_of")],
                 }
             return self.send(200, json.dumps(payload))
         self.send(404, '{"error":"not found"}')

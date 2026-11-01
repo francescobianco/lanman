@@ -95,6 +95,7 @@ function card(d){
   add('Rilevato da',Object.entries(d.seen_by||{}).sort((a,b)=>b[1]-a[1]).map(([k,t])=>`${LAY[k]||k} (${ago(t)})`).join(', '));
   add('Indirizzi IP',(d.ips||[d.ip]).join(', '));
   add('MAC',d.mac);
+  add('Altri MAC usati',(d.aliases||[]).map(a=>`${a.mac} (${a.ip}, ${ago(a.last_seen)})`).join(', '));
   add('Produttore (MAC)',d.vendor||(d.mac&&/^.[26ae]/.test(d.mac)?'MAC privato/randomizzato':''));
   add('Hostname DNS',d.hostname);
   add('Hostname mDNS',x.mdns_hostname);
