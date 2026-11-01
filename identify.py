@@ -64,7 +64,7 @@ BRAND_ALIASES = [
     ("intel", "Intel"), ("realtek", "Realtek"), ("amazon", "Amazon"), ("google", "Google"),
     ("nintendo", "Nintendo"), ("synology", "Synology"), ("qnap", "QNAP"), ("ubiquiti", "Ubiquiti"),
     ("murata", "Murata"), ("azurewave", "AzureWave"), ("liteon", "Lite-On"), ("chongqing fugui", "Fugui"),
-    ("brother", "Brother"), ("canon", "Canon"), ("signify", "Philips Hue"), ("tp vision", "Philips TV"),
+    ("brother", "Brother"), ("ntx electronics", "Netronix"), ("rakuten kobo", "Kobo"), ("canon", "Canon"), ("signify", "Philips Hue"), ("tp vision", "Philips TV"),
     ("allterco", "Shelly"), ("shelly", "Shelly"), ("tuya", "Tuya"), ("hangzhou hikvision", "Hikvision"),
     ("zhejiang dahua", "Dahua"), ("motorola mobility", "Motorola"), ("oneplus", "OnePlus"),
     ("guangdong oppo", "OPPO"), ("vivo mobile", "vivo"), ("nest labs", "Google Nest"), ("bsh ", "Bosch Siemens"),
@@ -963,6 +963,8 @@ VENDOR_TYPES = [
     (r"xiaomi", [("mobile", 2), ("iot", 2)]),
     (r"huawei", [("mobile", 2), ("router", 1)]),
     (r"google", [("mobile", 2), ("media", 2)]),
+    # e-readers (Netronix builds Kobo / Tolino readers)
+    (r"netronix|ntx electronics|rakuten kobo|pocketbook|onyx international|boox", [("mobile", 8)]),
     # media
     (r"roku|sonos|tp vision|vizio|sound united|bose", [("media", 6)]),
     (r"lg electronics|sony|tcl|hisense|panasonic|sharp|yamaha|harman|sky ", [("media", 3)]),
@@ -1167,6 +1169,8 @@ def classify(d, vendor):
             model = model or m.group(1).strip()
     if SMART_ASSISTANT.search((model or "") + " " + joined):
         vote("iot", 30)  # declared model beats the generic cast hints
+    if vendor and re.search(r"netronix|ntx electronics|rakuten kobo", vendor, re.I) and not model:
+        model = "e-reader (Kobo / Tolino)"
     nb_brand, nb_model = name_model(names)
     if nb_model and not model:
         brand, model = brand or nb_brand, nb_model
