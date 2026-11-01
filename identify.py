@@ -36,7 +36,7 @@ TYPES = [
     ("unknown", "Sconosciuti"),
 ]
 TYPE_KEYS = [k for k, _ in TYPES]
-PROBE_VERSION = 5  # bump when probes change: cached devices get re-identified
+PROBE_VERSION = 6  # bump when probes change: cached devices get re-identified
 TYPE_NOUNS = {
     "router": "router", "vpn": "client VPN", "server": "server", "computer": "computer", "mobile": "smartphone/tablet",
     "media": "dispositivo multimediale", "printer": "stampante", "camera": "telecamera",
@@ -343,11 +343,18 @@ def mdns_browse(self_ip, ips):
 
 
 # ------------------------------------------------------------- SSDP/UPnP ---
-def ssdp_search(self_ip, timeout=3):
+# some devices ignore ssdp:all and only answer their own search target (Fire TV: DIAL)
+SSDP_TARGETS = ["ssdp:all", "upnp:rootdevice", "urn:dial-multiscreen-org:service:dial:1",
+                "urn:schemas-upnp-org:device:MediaRenderer:1"]
+
+
+def ssdp_search(self_ip, ips=(), timeout=3):
     """-> {ip: {"locations": [...], "server": str}}"""
     res = {}
-    msg = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\n"
-           "MX: 2\r\nST: ssdp:all\r\n\r\n").encode()
+
+    def msg(host, st):
+        return ("M-SEARCH * HTTP/1.1\r\nHOST: %s:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: %s\r\n\r\n"
+                % (host, st)).encode()
 
     def handle(data, src):
         headers = {}
@@ -366,8 +373,13 @@ def ssdp_search(self_ip, timeout=3):
         print("ssdp socket:", e, flush=True)
         return {}
     with s:
-        for _ in range(2):
-            s.sendto(msg, ("239.255.255.250", 1900))
+        for st in SSDP_TARGETS:
+            s.sendto(msg("239.255.255.250", st), ("239.255.255.250", 1900))
+            for ip in ips:  # unicast too: range extenders / Wi-Fi often drop multicast
+                try:
+                    s.sendto(msg(ip, st), (ip, 1900))
+                except OSError:
+                    pass
         _recv_all(s, timeout, handle)
     return res
 
@@ -380,9 +392,11 @@ def _xml_tag(xml, tag):
 def upnp_describe(ip, locations):
     out = {"device_types": []}
     for loc in locations:
-        m = re.match(r"https?://([\d.]+)[:/]", loc)
-        if not m or m.group(1) != ip:
+        m = re.match(r"(https?://)([\d.]+)([:/].*)$", loc)
+        if not m:
             continue
+        if m.group(2) != ip:  # e.g. Fire TV advertises its Wi-Fi Direct address (192.168.49.1)
+            loc = m.group(1) + ip + m.group(3)
         try:
             with urllib.request.urlopen(loc, timeout=3) as r:
                 xml = r.read(262144).decode("utf-8", "replace")
@@ -594,7 +608,7 @@ WIFI_ONLY_VENDORS = re.compile(r"espressif|azurewave|murata|fn-link|chongqing fu
                                r"itead|universal global scientific|hui zhou gaoshengda|realtek semiconductor", re.I)
 
 
-WIFI_ONLY_MODELS = re.compile(r"fire tv \(aft(ss|mm|ka|sss|t)|chromecast|home mini|nest mini|nest audio|"
+WIFI_ONLY_MODELS = re.compile(r"fire tv stick|chromecast|home mini|nest mini|nest audio|"
                               r"echo dot|tapo [hplts]", re.I)
 
 
@@ -637,7 +651,7 @@ def probe(self_ip, all_ips, targets, measure_rtt=False):
     out = {}
     with ThreadPoolExecutor(max_workers=3) as ex:
         f_mdns = ex.submit(mdns_browse, self_ip, all_ips)
-        f_ssdp = ex.submit(ssdp_search, self_ip)
+        f_ssdp = ex.submit(ssdp_search, self_ip, targets)
         f_nb = ex.submit(netbios, self_ip, targets)
         f_ports = ex.submit(port_scan, targets)
         mdns, ssdp, nb, ports = f_mdns.result(), f_ssdp.result(), f_nb.result(), f_ports.result()
@@ -910,6 +924,13 @@ TAPO_MODELS = [
     (r"(?:C|TC)\d{3}", "camera", "telecamera"), (r"D\d{3}", "camera", "videocitofono"),
     (r"RV\d{2,3}", "iot", "robot aspirapolvere"),
 ]
+FIRE_TV = {
+    "AFTM": "Fire TV Stick (1ª gen.)", "AFTT": "Fire TV Stick (2ª gen.)", "AFTSSS": "Fire TV Stick (3ª gen.)",
+    "AFTSS": "Fire TV Stick Lite", "AFTMM": "Fire TV Stick 4K", "AFTKM": "Fire TV Stick 4K (2ª gen.)",
+    "AFTKA": "Fire TV Stick 4K Max", "AFTKRT": "Fire TV Stick 4K Max (2ª gen.)", "AFTB": "Fire TV (1ª gen.)",
+    "AFTS": "Fire TV (2ª gen.)", "AFTN": "Fire TV (3ª gen.)", "AFTR": "Fire TV Cube (1ª gen.)",
+    "AFTA": "Fire TV Cube (2ª gen.)", "AFTGAZL": "Fire TV Cube (3ª gen.)",
+}
 # ISP / consumer gateways, matched on names + web titles: (regex, brand, model, os)
 ISP_BOXES = [
     (r"iliadbox", "Iliad", "Iliadbox", "iliadbox OS"),
@@ -1045,9 +1066,11 @@ def classify(d, vendor):
         if re.search(rx, joined):
             for t, w in votes:
                 vote(t, w)
-    fire = re.search(r"\b(?:\w+-)?(AFT[A-Z0-9]{1,6})\b", " ".join(names))
+    fire = re.search(r"\b(?:\w+-)?(AFT[A-Z0-9]{1,6})\b", " ".join(names + [upnp.get("modelName") or ""]))
     if fire:  # Amazon Fire TV model codes (AFTSS, AFTMM, AFTKA, ...)
-        brand, model = brand if brand != "Apple" else None, "Fire TV (%s)" % fire.group(1)
+        code = fire.group(1)
+        brand = "Amazon"
+        model = "%s (%s)" % (FIRE_TV[code], code) if code in FIRE_TV else "Fire TV (%s)" % code
         vote("media", 8)
     for h in https:
         blob = " ".join(x for x in (h.get("title"), h.get("server")) if x).lower()
