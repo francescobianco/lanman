@@ -79,14 +79,21 @@ def ping(ip):
     return r.returncode == 0
 
 
+FRESH_NEIGH = {"REACHABLE", "DELAY", "PROBE", "PERMANENT"}
+
+
 def neighbours(iface):
-    """ip -> mac for neighbours with a usable link-layer address."""
-    out = {}
+    """-> (ip -> mac for every neighbour with a link-layer address,
+           set of ips whose entry was confirmed recently).
+    STALE entries linger long after a device has left: good for MAC lookup only."""
+    macs, fresh = {}, set()
     for line in sh("ip", "-4", "neigh", "show", "dev", iface).splitlines():
         parts = line.split()
         if "lladdr" in parts and "FAILED" not in parts and "INCOMPLETE" not in parts:
-            out[parts[0]] = parts[parts.index("lladdr") + 1].lower()
-    return out
+            macs[parts[0]] = parts[parts.index("lladdr") + 1].lower()
+            if FRESH_NEIGH & set(parts):
+                fresh.add(parts[0])
+    return macs, fresh
 
 
 def resolve(ip):
@@ -114,7 +121,7 @@ def scan():
     hosts = [str(h) for h in net.hosts()]
     with ThreadPoolExecutor(max_workers=64) as ex:
         alive = {ip for ip, ok in zip(hosts, ex.map(ping, hosts)) if ok}
-    neigh = neighbours(iface)
+    neigh, fresh = neighbours(iface)
     mymac = own_mac(iface)
     mine = [str(i.ip) for i in own_ips(iface) if i.ip in net]
     gw = state["gateway"]
@@ -141,7 +148,10 @@ def scan():
     for ip in alive:
         saw(ip, "ping")
     for ip, mac in neigh.items():
-        saw(ip, "arp", mac)
+        if ip in fresh:
+            saw(ip, "arp", mac)
+        else:
+            macs.setdefault(ip, mac)  # MAC still useful to fold other layers' sightings
     for ip in mine:
         saw(ip, "arp", mymac)
     for key, r in (rhosts or {}).items():
@@ -221,9 +231,10 @@ def scan():
                 if host:
                     d["hostname"] = host
         for key, d in devices.items():
-            if key not in groups:
+            d["present"] = key in groups  # seen in this round
+            if not d["present"]:
                 d["ping"] = False
-            d["online"] = now - d.get("last_seen", 0) < ONLINE_GRACE
+            d["online"] = now - d.get("last_seen", 0) < ONLINE_GRACE  # present, or in standby
         state["last_scan"] = now
         save()
     state["scanning"] = False

@@ -3,7 +3,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>lanman</title>
 <style>
-:root{--bg:#fafafa;--fg:#222;--mut:#888;--line:#e5e5e5;--soft:#f0f0f0;--on:#1a9c4b;--off:#c9c9c9;--acc:#2a6df4}
+:root{--bg:#fafafa;--fg:#222;--mut:#888;--line:#e5e5e5;--soft:#f0f0f0;--on:#1a9c4b;--idle:#d39b12;--off:#c9c9c9;--acc:#2a6df4}
 @media (prefers-color-scheme:dark){:root{--bg:#141414;--fg:#e6e6e6;--mut:#8a8a8a;--line:#2a2a2a;--soft:#1d1d1d;--off:#444}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,sans-serif}
@@ -30,6 +30,7 @@ tr.grp span{font-weight:400;color:var(--mut);margin-left:6px}
 .lk{display:inline-block;width:14px;height:14px;vertical-align:-2px;margin-left:6px;color:var(--mut)}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--off)}
 tr.on .dot{background:var(--on)}
+tr.idle .dot{background:var(--idle)}
 code{font:12px ui-monospace,monospace}
 .tag{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:0 4px;margin-left:4px}
 .sub{color:var(--mut);margin-left:6px}
@@ -61,6 +62,9 @@ const ago=t=>{if(!t)return'';const s=Date.now()/1000-t;
   if(s<86400)return Math.round(s/3600)+' h fa';return Math.round(s/86400)+' g fa'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const label=d=>d.display_name||'';
+// online = seen in this round; idle = silent now but seen in the last minutes (sleeping phones)
+const st=d=>!d.online?'off':d.present===false?'idle':'on';
+const STATE={on:'online',idle:'in standby',off:'offline'};
 try{$('#onlyOn').checked=localStorage.lanmanOnly==='1'}catch(e){}
 
 const ICONS={
@@ -80,7 +84,7 @@ function card(d){
   const di=(d.details||{}).device_info||{};
   add('Nome dispositivo',di.name);add('Hardware',di.hardware);add('Firmware',di.firmware);
   add('CPU',l.cpu);add('RAM',l.ram);add('Kernel',l.kernel);
-  add('Stato',d.online?'online':'offline, visto '+fmt(d.last_seen));
+  add('Stato',st(d)==='on'?'online':STATE[st(d)]+', visto '+ago(d.last_seen)+' ('+fmt(d.last_seen)+')');
   add('Connessione',d.link&&`${LINKS[d.link]} (${d.link_source})`);
   const LAY={ping:'ping',arp:'ARP',dhcp:'DHCP',router:'router',mdns:'mDNS',ssdp:'SSDP'};
   add('Rilevato da',Object.entries(d.seen_by||{}).sort((a,b)=>b[1]-a[1]).map(([k,t])=>`${LAY[k]||k} (${ago(t)})`).join(', '));
@@ -143,18 +147,18 @@ function render(){
       +(d.type_guess&&d.type!=='unknown'?'<span class="tag" title="tipologia dedotta con pochi indizi">?</span>':'');
     const extra=(d.ips||[]).length>1?` <span class="mut">+${d.ips.length-1}</span>`:'';
     const rnd=d.mac&&/^.[26ae]/.test(d.mac)?'<span class="tag" title="MAC privato/randomizzato">rnd</span>':'';
-    out.push(`<tr class="dev ${d.online?'on':'off'}" data-id="${esc(d.id)}">
-      <td><span class="dot" title="${d.online?(d.ping?'online':'online (visto da: '+Object.keys(d.seen_by||{}).join(', ')+')'):'offline'}"></span>${linkIcon(d)}</td>
+    out.push(`<tr class="dev ${st(d)}" data-id="${esc(d.id)}">
+      <td><span class="dot" title="${STATE[st(d)]}${st(d)==='off'?'':' (visto da: '+Object.keys(d.seen_by||{}).join(', ')+')'}"></span>${linkIcon(d)}</td>
       <td>${esc(label(d))}${tags}</td>
       <td>${esc(d.brand)}</td><td>${esc(d.model)}${d.os?`<span class="${d.model?'sub':'mut'}">${esc(d.os)}</span>`:''}</td>
       <td><code>${esc(d.ip)}</code>${extra}</td>
       <td><code>${esc(d.mac)}</code>${rnd}</td>
-      <td>${d.online?'online':ago(d.last_seen)}</td></tr>`);
+      <td>${st(d)==='on'?'online':st(d)==='idle'?'standby, '+ago(d.last_seen):ago(d.last_seen)}</td></tr>`);
     if(open===d.id)out.push(detail(d));
   }
   $('#tb').innerHTML=out.join('');
-  const on=data.devices.filter(d=>d.online).length;
-  $('#cnt').textContent=`${on} online / ${data.devices.length}`;
+  const on=data.devices.filter(d=>st(d)==='on').length,idle=data.devices.filter(d=>st(d)==='idle').length;
+  $('#cnt').textContent=`${on} online${idle?` · ${idle} in standby`:''} / ${data.devices.length}`;
   $('#net').textContent=`${data.network||''} su ${data.iface||''}`;
   const busy=data.scanning||data.probing||Date.now()-clicked<4000;
   $('#scan').disabled=busy;$('#scan').textContent=busy?'Scansione…':'Scansiona';
