@@ -16,6 +16,8 @@ button,select,input{font:inherit;color:var(--fg);background:none;border:1px soli
 select{background:var(--bg)}
 button{cursor:pointer}
 button:hover{border-color:var(--acc)}
+button:disabled{opacity:.5;cursor:default}
+button:disabled:hover{border-color:var(--line)}
 .wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse}
 th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
@@ -51,7 +53,7 @@ code{font:12px ui-monospace,monospace}
 <p class="mut" id="foot"></p>
 </main>
 <script>
-let data={devices:[],types:[]},sortK='ip',sortD=1,open=null;
+let data={devices:[],types:[]},sortK='ip',sortD=1,open=null,clicked=0;
 const $=s=>document.querySelector(s);
 const ipn=ip=>ip.split('.').reduce((a,b)=>a*256+ +b,0);
 const ago=t=>{if(!t)return'';const s=Date.now()/1000-t;
@@ -154,13 +156,16 @@ function render(){
   const on=data.devices.filter(d=>d.online).length;
   $('#cnt').textContent=`${on} online / ${data.devices.length}`;
   $('#net').textContent=`${data.network||''} su ${data.iface||''}`;
+  const busy=data.scanning||data.probing||Date.now()-clicked<4000;
+  $('#scan').disabled=busy;$('#scan').textContent=busy?'Scansione…':'Scansiona';
   $('#foot').textContent=data.scanning?'scansione in corso…':data.probing?'identificazione dispositivi in corso…':
     (data.last_scan?'ultima scansione: '+new Date(data.last_scan*1000).toLocaleTimeString():'');
 }
 async function load(){try{data=await (await fetch('/api/devices')).json();render()}catch(e){$('#foot').textContent='server non raggiungibile'}}
 async function post(u,b){await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})})}
 
-$('#scan').onclick=async()=>{await post('/api/scan');setTimeout(load,500)};
+$('#scan').onclick=async()=>{if($('#scan').disabled)return;clicked=Date.now();render();
+  await post('/api/scan');setTimeout(load,500);setTimeout(load,4100)};
 $('#onlyOn').onchange=()=>{try{localStorage.lanmanOnly=$('#onlyOn').checked?'1':'0'}catch(e){}render()};
 document.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{
   sortD=sortK===th.dataset.k?-sortD:1;sortK=th.dataset.k;render()});

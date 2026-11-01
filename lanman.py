@@ -404,6 +404,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/api/scan":
+            if state["scanning"] or state["probing"] or scan_now.is_set():
+                return self.send(409, '{"ok":false,"busy":true}')
             scan_now.set()
             return self.send(202, '{"ok":true}')
         self.send(404, '{"error":"not found"}')
