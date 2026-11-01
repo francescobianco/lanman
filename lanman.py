@@ -353,17 +353,17 @@ def events():
             link = {"wifi": "Wi-Fi", "wired": "cavo", "vpn": "VPN"}.get(pub.get("link"))
             info = " · ".join(x for x in (typ, link) if x)
             if prev is None:
-                out.append(("Nuovo dispositivo: %s" % name, info, "new"))
+                out.append(("Nuovo dispositivo: %s" % name, info))
             elif cur == "online":
-                out.append(("%s è online" % name, info, "green_circle"))
+                out.append(("%s è online" % name, info))
             else:
                 out.append(("%s è offline" % name, "%s · ultimo avvistamento %s" % (
-                    info, time.strftime("%H:%M", time.localtime(d["last_seen"]))), "red_circle"))
+                    info, time.strftime("%H:%M", time.localtime(d["last_seen"])))))
         if out or quiet:
             save()
-    for title, message, tags in out:
+    for title, message in out:
         print("notify: %s" % title, flush=True)
-        notify.send(url, title, message, tags)
+        notify.send(url, title, message)
 
 
 def scanner(interval):

@@ -26,12 +26,12 @@ def target(data_dir):
     return value if "://" in value else DEFAULT_SERVER + value.strip("/")
 
 
-def send(url, title, message, tags=""):
-    """Fire and forget POST to ntfy; title/tags go in the query string so
-    they can carry any UTF-8 text."""
+def send(url, title, message):
+    """Fire and forget POST to ntfy; the title goes in the query string so it
+    can carry any UTF-8 text."""
     if not url:
         return
-    query = urllib.parse.urlencode({k: v for k, v in (("title", title), ("tags", tags)) if v})
+    query = urllib.parse.urlencode({"title": title})
 
     def post():
         try:
