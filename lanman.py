@@ -34,8 +34,13 @@ def sh(*cmd):
 
 
 def detect_iface():
-    m = re.search(r"\bdev (\S+)", sh("ip", "-4", "route", "show", "default"))
-    return m.group(1) if m else None
+    """First default-route interface with a real MAC (skips tun/VPN links)."""
+    devs = re.findall(r"\bdev (\S+)", sh("ip", "-4", "route", "show", "default"))
+    for dev in devs:
+        mac = own_mac(dev)
+        if mac and mac != "00:00:00:00:00:00":
+            return dev
+    return devs[0] if devs else None
 
 
 def iface_network(iface):
