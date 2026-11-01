@@ -1203,12 +1203,13 @@ def classify(d, vendor):
         vote("mobile", 8)
     elif dos and dos.startswith("Android"):
         vote("mobile", 4)
-    vcm = re.match(r"([A-Za-z]+):android:?([\w-]*)", (d.get("dhcp") or {}).get("vendor_class") or "")
-    if vcm:  # vendor class carries brand and model code
-        brand = brand or vcm.group(1).capitalize()
-        model = model or vcm.group(2) or None
-        vote("mobile", 6)
     nb_brand, nb_model = name_model(names)
+    vcm = re.match(r"([A-Za-z]+):android:?([\w-]*)", (d.get("dhcp") or {}).get("vendor_class") or "")
+    if vcm:  # vendor class carries brand and model code, e.g. HONOR:android:ROD2-W09
+        code = vcm.group(2) or None
+        nb_model = "%s (%s)" % (nb_model, code) if nb_model and code else nb_model or code
+        nb_brand = nb_brand or vcm.group(1).capitalize()
+        vote("mobile", 6)
     if nb_model and not model:
         brand, model = brand or nb_brand, nb_model
     tapo_web = any("SHIP 2.0" in ((h.get("title") or "") + (h.get("server") or "")) for h in https)
