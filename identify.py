@@ -723,7 +723,7 @@ NAME_TYPES = [
      [("server", 6)]),
     (r"printer|laserjet|officejet|deskjet|envy|epson|canon|^brn|^brw|kyocera", [("printer", 6)]),
     (r"\btv\b|-tv|tv-|bravia|chromecast|fire-?tv|roku|shield|apple-?tv|webos|tizen|television|sonos|"
-     r"homepod|echo|alexa|google-?home|nest-?(hub|mini|audio)|soundbar|speaker", [("media", 6)]),
+     r"soundbar", [("media", 6)]),
     (r"cam\b|camera|ipc|doorbell|nvr|dvr", [("camera", 5)]),
     (r"esp[-_]|esp32|esp8266|shelly|tasmota|tuya|sonoff|plug|bulb|\bhue\b|wled|zigbee|vacuum|roborock|"
      r"roomba|dyson|thermostat|smart", [("iot", 5)]),
@@ -738,6 +738,9 @@ HTTP_TYPES = [
     (r"tasmota|shelly|esphome|wled|tuya", ("iot", 8)),
     (r"caddy|apache|nginx|traefik|vtiger|qbittorrent|transmission|jellyfin|grafana|gitea|wordpress", ("server", 3)),
 ]
+# voice assistants / smart speakers & displays belong to home automation
+SMART_ASSISTANT = re.compile(r"google[ -]?home|google nest|nest[ -]?(mini|audio|hub)|home mini|\becho\b|alexa|"
+                             r"homepod", re.I)
 # ISP / consumer gateways, matched on names + web titles: (regex, brand, model, os)
 ISP_BOXES = [
     (r"iliadbox", "Iliad", "Iliadbox", "iliadbox OS"),
@@ -755,7 +758,7 @@ APPLE_MODELS = [
     ("MacBookPro", "MacBook Pro", "computer"), ("MacBookAir", "MacBook Air", "computer"),
     ("MacBook", "MacBook", "computer"), ("iMac", "iMac", "computer"), ("Macmini", "Mac mini", "computer"),
     ("MacPro", "Mac Pro", "computer"), ("Mac", "Mac", "computer"), ("AppleTV", "Apple TV", "media"),
-    ("AudioAccessory", "HomePod", "media"),
+    ("AudioAccessory", "HomePod", "iot"),
 ]
 DOMAIN_SUFFIX = re.compile(r"\.(fritz\.box|lan|local|home|localdomain|home\.arpa|station|box)$", re.I)
 
@@ -864,6 +867,8 @@ def classify(d, vendor):
         m = re.search(r"(FRITZ!(?:Box|Repeater|Powerline)[\w ]*\d[\w ]*)", h.get("title") or "")
         if m:
             model = model or m.group(1).strip()
+    if SMART_ASSISTANT.search((model or "") + " " + joined):
+        vote("iot", 30)  # declared model beats the generic cast hints
     box = None
     blob_all = (joined + " " + " ".join("%s %s" % (h.get("title") or "", h.get("server") or "") for h in https)).lower()
     for rx, b_brand, b_model, b_os in ISP_BOXES:
