@@ -57,7 +57,7 @@ BRAND_ALIASES = [
     ("allterco", "Shelly"), ("shelly", "Shelly"), ("tuya", "Tuya"), ("hangzhou hikvision", "Hikvision"),
     ("zhejiang dahua", "Dahua"), ("motorola mobility", "Motorola"), ("oneplus", "OnePlus"),
     ("guangdong oppo", "OPPO"), ("vivo mobile", "vivo"), ("nest labs", "Google Nest"), ("bsh ", "Bosch Siemens"),
-    ("sagemcom", "Sagemcom"), ("technicolor", "Technicolor"), ("arcadyan", "Arcadyan"), ("zte", "ZTE"),
+    ("fritz", "AVM"), ("sagemcom", "Sagemcom"), ("technicolor", "Technicolor"), ("arcadyan", "Arcadyan"), ("zte", "ZTE"),
 ]
 
 
@@ -587,7 +587,7 @@ VENDOR_TYPES = [
     # iot
     (r"espressif|shelly|allterco|itead|signify|nest labs|ecobee|netatmo|bsh |miele|irobot|roborock|"
      r"tado|broadlink|ikea|wiz connected|silicon lab", [("iot", 6)]),
-    (r"murata|texas instruments|chongqing fugui", [("iot", 1)]),
+    (r"murata|texas instruments|chongqing fugui|fn-link", [("iot", 2)]),
     # consoles
     (r"nintendo|sony interactive|valve", [("console", 8)]),
 ]
@@ -613,6 +613,7 @@ HTTP_TYPES = [
     (r"printer|laserjet|officejet|deskjet|epson|brother|ricoh|kyocera|lexmark", ("printer", 7)),
     (r"webcam|ipcam|network camera|nvr|dvr|hikvision", ("camera", 7)),
     (r"tasmota|shelly|esphome|wled|tuya", ("iot", 8)),
+    (r"caddy|apache|nginx|traefik|vtiger|qbittorrent|transmission|jellyfin|grafana|gitea|wordpress", ("server", 3)),
 ]
 APPLE_MODELS = [
     ("iPhone", "iPhone", "mobile"), ("iPad", "iPad", "mobile"), ("Watch", "Apple Watch", "mobile"),
@@ -666,6 +667,15 @@ def classify(d, vendor):
     ipp = txt.get("_ipp._tcp") or txt.get("_ipps._tcp") or txt.get("_printer._tcp") or {}
     if ipp.get("ty"):
         model = model or ipp["ty"]
+    # CUPS/Samba print server: "Brother HL-2130 series @ host" is a shared queue, not the printer itself
+    instances = mdns.get("instances") or {}
+    shared = next((v.split(" @ ")[0] for k, v in instances.items()
+                   if " @ " in v and k in ("_ipp._tcp", "_ipps._tcp", "_printer._tcp")), None)
+    if shared:
+        model = None
+        vote("server", 4)
+    if (txt.get("_device-info._tcp") or {}).get("model") == "MacSamba":
+        vote("server", 3)  # Samba on Linux
     hap = txt.get("_hap._tcp") or {}
     if hap.get("md"):
         model = model or hap["md"]
@@ -677,10 +687,13 @@ def classify(d, vendor):
         brand = brand or short_brand(upnp["manufacturer"])
     if upnp.get("modelName"):
         mn, num = upnp["modelName"], upnp.get("modelNumber")
-        model = model or (mn + (" " + num if num and num not in mn and len(num) < 20 else ""))
+        digits = re.findall(r"\d{3,}", mn)
+        same = num and (num in mn or mn in num or any(x in num for x in digits))
+        model = model or (mn + (" " + num if num and not same and len(num) < 20 else ""))
     for s in mdns.get("services", []):
         for t, w in MDNS_TYPES.get(s, []):
-            vote(t, w)
+            if not (shared and t == "printer"):
+                vote(t, w)
     for port in ports:
         for t, w in PORT_TYPES.get(port, []):
             vote(t, w)
@@ -717,6 +730,8 @@ def classify(d, vendor):
     if is_random_mac(d.get("mac")) and not d.get("is_self"):
         vote("mobile", 1)  # private Wi-Fi addresses are mostly phones/tablets
 
+    if "printer" in score and (22 in ports or 445 in ports):
+        score["printer"] *= 0.3  # real printers hardly ever run ssh or smb
     score.pop("unknown", None)
     if score:
         type_, best = max(score.items(), key=lambda kv: kv[1])
@@ -739,4 +754,5 @@ def classify(d, vendor):
         "model": model,
         "auto_name": auto_name,
         "vendor": vendor,
+        "shared_printer": shared,
     }

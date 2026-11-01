@@ -71,6 +71,7 @@ function detail(d){
   add('UPnP',x.upnp&&esc([x.upnp.friendlyName,x.upnp.manufacturer,x.upnp.modelName,x.upnp.modelNumber,
       (x.upnp.device_types||[]).join(', ')].filter(Boolean).join(' · ')));
   add('Server SSDP',esc(x.ssdp_server));
+  add('Stampante condivisa',esc(d.shared_printer));
   add('Porte aperte',esc((x.ports||[]).join(', ')));
   add('Web',(x.http||[]).map(h=>`<a href="${h.port==443||h.port==8443||h.port==5001?'https':'http'}://${esc(d.ip)}:${h.port}/" target="_blank">:${h.port}</a> ${esc([h.title,h.server].filter(Boolean).join(' — '))}`).join('<br>'));
   add('Note',esc(d.note));

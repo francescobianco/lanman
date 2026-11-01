@@ -233,7 +233,8 @@ def save():
 def public(key, d):
     out = {k: v for k, v in d.items() if k != "probe"}
     out["id"] = key
-    out.update(identify.classify(d, vendors.lookup(d.get("mac"))))
+    vendor = None if d.get("via_router") else vendors.lookup(d.get("mac"))
+    out.update(identify.classify(d, vendor))
     out["type_override"] = d.get("type")
     if d.get("type"):  # user override
         out["type"], out["type_guess"] = d["type"], False
