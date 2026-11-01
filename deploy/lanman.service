@@ -1,0 +1,12 @@
+[Unit]
+Description=lanman - tiny LAN manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/lanman/lanman.py --port 7780
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
