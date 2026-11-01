@@ -15,6 +15,7 @@ import ssl
 import struct
 import subprocess
 import time
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -33,7 +34,7 @@ TYPES = [
     ("unknown", "Sconosciuti"),
 ]
 TYPE_KEYS = [k for k, _ in TYPES]
-PROBE_VERSION = 3  # bump when probes change: cached devices get re-identified
+PROBE_VERSION = 4  # bump when probes change: cached devices get re-identified
 TYPE_NOUNS = {
     "router": "router", "vpn": "client VPN", "server": "server", "computer": "computer", "mobile": "smartphone/tablet",
     "media": "dispositivo multimediale", "printer": "stampante", "camera": "telecamera",
@@ -485,10 +486,49 @@ def http_info(ip, port):
         return None
     t = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
     title = re.sub(r"\s+", " ", html.unescape(t.group(1))).strip()[:80] if t else None
+    if title and re.fullmatch(r"(opening|loading|redirect\w*|please wait)\W*", title, re.I):
+        title = None  # single page app placeholder
     server = r.getheader("Server")
-    if not title and not server:
+    hint = next((h for rx, h in WEB_HINTS if re.search(rx, body)), None)
+    if not title and not server and not hint:
         return None
-    return {"port": port, "title": title, "server": server}
+    out = {"port": port, "title": title, "server": server}
+    if hint:
+        out["hint"] = hint
+    return out
+
+
+# fingerprints found in a device's web UI (single page apps have no useful <title>)
+WEB_HINTS = [
+    (r"tplinkrepeater\.net", "tplink-extender"),
+    (r"tplinkdeco\.net", "tplink-deco"),
+    (r"tplinkwifi\.net|tplinklogin\.net|tplinkap\.net", "tplink-router"),
+]
+
+
+def tplink_device_block(ip, port=80):
+    """Read the public DEVICE data block of TP-Link "TDDP" web UIs (range
+    extenders, some routers/APs). No login needed, read only."""
+    try:
+        c = http.client.HTTPConnection(ip, port, timeout=3)
+        c.request("POST", "/?code=2&asyn=0", body=b"0|1,0,0",
+                  headers={"Content-Type": "text/plain;charset=UTF-8", "Referer": "http://%s/" % ip,
+                           "User-Agent": "lanman"})
+        text = c.getresponse().read(16384).decode("utf-8", "replace")
+        c.close()
+    except Exception:
+        return None
+    f = {}
+    for line in text.splitlines()[1:]:
+        k, _, v = line.partition(" ")
+        if k:
+            f[k] = urllib.parse.unquote(v.strip())
+    if not f.get("modelName"):
+        return None
+    return {k: v for k, v in {
+        "name": f.get("fullName"), "brand": f.get("facturer"), "model": f.get("modelName"),
+        "model_ver": f.get("modelVer"), "hardware": f.get("hardVer"), "firmware": f.get("softVer"),
+    }.items() if v}
 
 
 # ------------------------------------------------------------ round trip ---
@@ -629,6 +669,11 @@ def probe(self_ip, all_ips, targets, measure_rtt=False):
             return job, ssh_banner(ip)
         if kind == "rtt":
             return job, rtt(ip)
+        if kind == "http":
+            r = http_info(ip, arg)
+            if r and (r.get("hint") or "").startswith("tplink"):
+                r["device_info"] = tplink_device_block(ip, arg)
+            return job, r
         return job, (http_info(ip, arg) if kind == "http" else upnp_describe(ip, arg))
 
     with ThreadPoolExecutor(max_workers=16) as ex:
@@ -638,6 +683,9 @@ def probe(self_ip, all_ips, targets, measure_rtt=False):
             if kind in ("ssh", "rtt"):
                 out.setdefault(ip, {})[kind] = r
             elif kind == "http":
+                di = r.pop("device_info", None)
+                if di:
+                    out.setdefault(ip, {})["device_info"] = di
                 out.setdefault(ip, {}).setdefault("http", []).append(r)
             else:
                 out.setdefault(ip, {})["upnp"] = r
@@ -893,6 +941,20 @@ def classify(d, vendor):
         score[t] = score.get(t, 0) + w
 
     brand = model = None
+    di = p.get("device_info") or {}
+    hints = {h.get("hint") for h in https if h.get("hint")}
+    if di.get("model"):
+        role = ("range extender" if re.search(r"extender|repeater", di.get("name", ""), re.I) or
+                "tplink-extender" in hints else
+                "access point" if re.search(r"access point", di.get("name", ""), re.I) else None)
+        brand = short_brand(di.get("brand")) or None
+        model = di["model"] + (" v%s" % di["model_ver"] if di.get("model_ver") else "") + \
+            (" (%s)" % role if role else "")
+        vote("router", 12)
+    elif hints & {"tplink-extender", "tplink-deco", "tplink-router"}:
+        brand = "TP-Link"
+        model = {"tplink-extender": "range extender", "tplink-deco": "Deco mesh"}.get(next(iter(hints)))
+        vote("router", 10)
     local = p.get("local") or {}
     if local:
         brand, model = local.get("brand"), local.get("model")
@@ -1037,7 +1099,8 @@ def classify(d, vendor):
         fallback = noun[0].upper() + noun[1:]
     if box and auto_name and re.search(r"freebox", auto_name, re.I) and box[0] != "Free":
         auto_name = None  # Iliad boxes advertise themselves as "Freebox Server"
-    os_name = (box and box[2]) or os_guess(p, apple, fire, " ".join(names), ports, vendor)
+    os_name = (box and box[2]) or (di.get("firmware") and "firmware " + re.sub(r" Rel\..*", "", di["firmware"])) \
+        or os_guess(p, apple, fire, " ".join(names), ports, vendor)
     if not os_name:
         m = next((re.match(r"^([\w!][\w! .-]{1,30}) OS$", h.get("title") or "") for h in https
                   if re.match(r"^[\w!][\w! .-]{1,30} OS$", h.get("title") or "")), None)

@@ -75,6 +75,8 @@ function card(d){
   const add=(k,v,h)=>{if(v)rows.push([k,v,h])};
   add('Tipo',(Object.fromEntries(data.types)[d.type]||d.type)+(d.type_guess?' (dedotto)':''));
   add('Marca',d.brand);add('Modello',d.model);add('Sistema operativo',d.os);
+  const di=(d.details||{}).device_info||{};
+  add('Nome dispositivo',di.name);add('Hardware',di.hardware);add('Firmware',di.firmware);
   add('CPU',l.cpu);add('RAM',l.ram);add('Kernel',l.kernel);
   add('Stato',d.online?'online':'offline, visto '+fmt(d.last_seen));
   add('Connessione',d.link&&`${LINKS[d.link]} (${d.link_source})`);

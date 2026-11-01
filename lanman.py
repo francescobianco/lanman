@@ -257,6 +257,7 @@ def public(key, d):
         "ssdp_server": p.get("ssdp_server"),
         "ports": p.get("ports"),
         "ssh": p.get("ssh"),
+        "device_info": p.get("device_info"),
         "http": p.get("http"),
     }
     return out

@@ -6,7 +6,8 @@ e mostra tutti i dispositivi in un pannello web minimale sulla porta **7780**.
 - Python 3 solo stdlib, un unico file (`lanman.py`), nessuna dipendenza
 - stato online/offline, IP, hostname, MAC, ultimo avvistamento
 - riconoscimento di **tipologia, marca e modello**: produttore dal MAC (database Wireshark,
-  scaricato in `~/.lanman/manuf`), mDNS/Bonjour, UPnP/SSDP, NetBIOS, porte aperte, titolo web
+  scaricato in `~/.lanman/manuf`), mDNS/Bonjour, UPnP/SSDP, NetBIOS, porte aperte, titolo web,
+  dati pubblici delle interfacce web (es. TP-Link: modello, hardware, firmware dei range extender)
 - lista raggruppata per tipologia (router, server/NAS, computer, smartphone, TV/media,
   stampanti, telecamere, domotica, console, sconosciuti)
 - cache per MAC address: l'identificazione sopravvive ai cambi di IP e viene rifatta
