@@ -56,8 +56,11 @@ lanman invia su [ntfy](https://ntfy.sh) i nuovi dispositivi e i passaggi online/
 (offline = nessun avvistamento da 15 minuti). Solo invio, nessun controllo remoto.
 Il canale si configura per installazione:
 
-    echo piave49 > ~/.lanman/ntfy        # topic su ntfy.sh, oppure un URL completo
-    # oppure: LANMAN_NTFY=piave49
+    python3 -c "import secrets;print(secrets.token_urlsafe(18))" > ~/.lanman/ntfy   # topic casuale
+    # oppure un URL completo, o la variabile LANMAN_NTFY
+
+Su ntfy.sh i topic sono pubblici: usa un nome lungo e casuale (fa da password).
+I messaggi non contengono nomi dei dispositivi né MAC, solo tipo, marca/modello e IP.
 
 ## API
 

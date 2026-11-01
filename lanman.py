@@ -344,22 +344,21 @@ def events():
                 d.pop("notified")  # wait for identification before announcing it
                 continue
             pub = public(key, d)
-            name = pub["display_name"]
-            what = " ".join(x for x in (pub.get("brand"), pub.get("model")) if x and x not in name)
+            # privacy: channels may be read by others -> no user-chosen names (they often contain
+            # people's names) and no MAC; describe the device by type/brand/model and IP suffix
+            what = " ".join(x for x in (pub.get("brand"), pub.get("model")) if x) or \
+                identify.TYPE_NOUNS[pub["type"]].capitalize()
+            name = "%s (.%s)" % (what, pub["ip"].rsplit(".", 1)[-1])
             typ = dict(identify.TYPES).get(pub["type"], pub["type"])
-            info = "%s · %s%s" % (pub["ip"], typ, " · " + what if what else "")
+            link = {"wifi": "Wi-Fi", "wired": "cavo", "vpn": "VPN"}.get(pub.get("link"))
+            info = " · ".join(x for x in (typ, link) if x)
             if prev is None:
-                out.append(("Nuovo dispositivo: %s" % name,
-                            "%s\nMAC %s%s" % (info, d.get("mac") or "-",
-                                               "\nConnessione: %s" % {"wifi": "Wi-Fi", "wired": "cavo", "vpn": "VPN"}.get(pub["link"], pub["link"])
-                                               if pub.get("link") else ""),
-                            "new"))
+                out.append(("Nuovo dispositivo: %s" % name, info, "new"))
             elif cur == "online":
                 out.append(("%s è online" % name, info, "green_circle"))
             else:
-                out.append(("%s è offline" % name,
-                            "%s\nultimo avvistamento %s" % (info, time.strftime("%H:%M", time.localtime(d["last_seen"]))),
-                            "red_circle"))
+                out.append(("%s è offline" % name, "%s · ultimo avvistamento %s" % (
+                    info, time.strftime("%H:%M", time.localtime(d["last_seen"]))), "red_circle"))
         if out or quiet:
             save()
     for title, message, tags in out:
