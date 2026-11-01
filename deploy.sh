@@ -5,7 +5,7 @@ set -euo pipefail
 HOST="${1:-192.168.144.44}"
 cd "$(dirname "$0")"
 ssh "$HOST" 'mkdir -p ~/lanman ~/.config/systemd/user'
-rsync -a lanman.py identify.py freebox.py index.html install-system.sh "$HOST":lanman/
+rsync -a lanman.py identify.py freebox.py notify.py index.html install-system.sh "$HOST":lanman/
 rsync -a deploy/lanman.service "$HOST":.config/systemd/user/
 if ssh "$HOST" 'test -f /etc/systemd/system/lanman.service'; then
   echo "system service installed: restart it with: ssh -t $HOST sudo systemctl restart lanman"

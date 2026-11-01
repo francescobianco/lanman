@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import freebox
 import identify
+import notify
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("LANMAN_DATA", os.path.expanduser("~/.lanman"))
@@ -312,9 +313,63 @@ def dhcp_listener():
             print("dhcp: %s %s" % (mac, merged), flush=True)
 
 
+# ----------------------------------------------------------------- events ---
+NOTIFY_OFFLINE_AFTER = 900  # silence needed before an "offline" notification (sleeping phones)
+
+
+def events():
+    """Notify (ntfy) new devices and online/offline changes.
+
+    d["notified"] keeps the last state that was announced, so restarts don't
+    repeat notifications. Runs after probe() so new devices carry brand/model."""
+    url = notify.target(DATA_DIR)
+    now = time.time()
+    out = []
+    with lock:
+        quiet = state.pop("quiet_events", False)  # fresh install: learn the network silently
+        for key, d in devices.items():
+            prev = d.get("notified")
+            if d.get("present"):
+                cur = "online"
+            elif now - d.get("last_seen", 0) > NOTIFY_OFFLINE_AFTER:
+                cur = "offline"
+            else:
+                cur = prev or "online"
+            if prev == cur:
+                continue
+            d["notified"] = cur
+            if quiet or not url:
+                continue
+            if prev is None and not d.get("probed_at") and d.get("present"):
+                d.pop("notified")  # wait for identification before announcing it
+                continue
+            pub = public(key, d)
+            name = pub["display_name"]
+            what = " ".join(x for x in (pub.get("brand"), pub.get("model")) if x and x not in name)
+            typ = dict(identify.TYPES).get(pub["type"], pub["type"])
+            info = "%s · %s%s" % (pub["ip"], typ, " · " + what if what else "")
+            if prev is None:
+                out.append(("Nuovo dispositivo: %s" % name,
+                            "%s\nMAC %s%s" % (info, d.get("mac") or "-",
+                                               "\nConnessione: %s" % {"wifi": "Wi-Fi", "wired": "cavo", "vpn": "VPN"}.get(pub["link"], pub["link"])
+                                               if pub.get("link") else ""),
+                            "new"))
+            elif cur == "online":
+                out.append(("%s è online" % name, info, "green_circle"))
+            else:
+                out.append(("%s è offline" % name,
+                            "%s\nultimo avvistamento %s" % (info, time.strftime("%H:%M", time.localtime(d["last_seen"]))),
+                            "red_circle"))
+        if out or quiet:
+            save()
+    for title, message, tags in out:
+        print("notify: %s" % title, flush=True)
+        notify.send(url, title, message, tags)
+
+
 def scanner(interval):
     while True:
-        for step in (scan, probe):
+        for step in (scan, probe, events):
             try:
                 step()
             except Exception as e:  # keep the loop alive
@@ -333,6 +388,8 @@ def load():
     except (OSError, ValueError):
         return
     for key, d in raw.items():
+        # devices known before notifications existed: don't announce them as new
+        d.setdefault("notified", "online" if d.get("online") else "offline")
         if re.fullmatch(r"[\d.]+", key):  # v1 file keyed by IP
             d.setdefault("ip", key)
             key = d.get("mac") or "ip:" + key
@@ -448,10 +505,13 @@ def main():
     if a.pair:
         raise SystemExit(0 if freebox.pair(state["gateway"], fbx.path) else 1)
     load()
+    if not devices:
+        state["quiet_events"] = True  # first run: don't announce the whole network
     vendors.load()
     threading.Thread(target=dhcp_listener, daemon=True).start()
     threading.Thread(target=scanner, args=(a.interval,), daemon=True).start()
-    print("lanman on http://%s:%d  (%s, %s, gw %s)" % (a.bind, a.port, iface, net, state["gateway"]), flush=True)
+    print("lanman on http://%s:%d  (%s, %s, gw %s, ntfy %s)" % (
+        a.bind, a.port, iface, net, state["gateway"], notify.target(DATA_DIR) or "off"), flush=True)
     ThreadingHTTPServer((a.bind, a.port), Handler).serve_forever()
 
 

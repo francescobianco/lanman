@@ -50,6 +50,15 @@ lanman la legge in modo passivo se può ascoltare sulla porta 67:
 
 Senza questo passo l'ascolto DHCP resta semplicemente disattivato.
 
+## Notifiche ntfy (facoltative)
+
+lanman invia su [ntfy](https://ntfy.sh) i nuovi dispositivi e i passaggi online/offline
+(offline = nessun avvistamento da 15 minuti). Solo invio, nessun controllo remoto.
+Il canale si configura per installazione:
+
+    echo piave49 > ~/.lanman/ntfy        # topic su ntfy.sh, oppure un URL completo
+    # oppure: LANMAN_NTFY=piave49
+
 ## API
 
 - `GET  /api/devices` — elenco dispositivi
