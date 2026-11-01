@@ -891,6 +891,8 @@ def dhcp_os(params, vendor_class):
         return "Android %s" % m.group(1)
     if vc.startswith("MSFT"):
         return "Windows"
+    if re.match(r"[A-Za-z]+:android", vc):  # e.g. HUAWEI:android:VOG-L29, HONOR:android:...
+        return "Android"
     p = (params or "").split(",")
     if not p or p == [""]:
         return None
@@ -910,6 +912,9 @@ NAME_MODELS = [
     (r"(poco[-_ ]?[a-z]\d+(?:[-_ ]?pro)?)", "Xiaomi", "%s"),
     (r"pixel[-_ ]?(\d+[a-z]?(?:[-_ ]?(?:pro|xl|a))?)", "Google", "Pixel %s"),
     (r"(oneplus[-_ ]?\w+)", "OnePlus", "%s"),
+    (r"honor[-_ ]?((?:magic)?pad[-_ ]?\w+|magic[-_ ]?\w+|x\d+\w*|\d+\w*)", "Honor", "Honor %s"),
+    (r"huawei[-_ ]?((?:mate)?pad[-_ ]?\w+|mate[-_ ]?\w+|p\d+\w*|nova[-_ ]?\w+)", "Huawei", "Huawei %s"),
+    (r"(matepad[-_ ]?\w*|mediapad[-_ ]?\w*)", "Huawei", "%s"),
     (r"(iphone(?:[-_ ]?\d+)?(?:[-_ ]?(?:pro|max|mini|plus))*)", "Apple", "%s"),
     (r"(ipad(?:[-_ ]?(?:pro|air|mini))?)", "Apple", "%s"),
 ]
@@ -1198,6 +1203,11 @@ def classify(d, vendor):
         vote("mobile", 8)
     elif dos and dos.startswith("Android"):
         vote("mobile", 4)
+    vcm = re.match(r"([A-Za-z]+):android:?([\w-]*)", (d.get("dhcp") or {}).get("vendor_class") or "")
+    if vcm:  # vendor class carries brand and model code
+        brand = brand or vcm.group(1).capitalize()
+        model = model or vcm.group(2) or None
+        vote("mobile", 6)
     nb_brand, nb_model = name_model(names)
     if nb_model and not model:
         brand, model = brand or nb_brand, nb_model
