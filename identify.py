@@ -31,6 +31,12 @@ TYPES = [
     ("unknown", "Sconosciuti"),
 ]
 TYPE_KEYS = [k for k, _ in TYPES]
+PROBE_VERSION = 2  # bump when probes change: cached devices get re-identified
+TYPE_NOUNS = {
+    "router": "router", "server": "server", "computer": "computer", "mobile": "smartphone/tablet",
+    "media": "dispositivo multimediale", "printer": "stampante", "camera": "telecamera",
+    "iot": "dispositivo smart", "console": "console", "unknown": "dispositivo",
+}
 
 
 def is_random_mac(mac):
@@ -453,6 +459,16 @@ def port_scan(ips):
     return res
 
 
+def ssh_banner(ip):
+    try:
+        with socket.create_connection((ip, 22), timeout=2) as s:
+            s.settimeout(2)
+            line = s.recv(256).split(b"\n")[0].decode("utf-8", "replace").strip()
+            return line if line.startswith("SSH-") else None
+    except OSError:
+        return None
+
+
 def http_info(ip, port):
     try:
         if port in (443, 8443, 5001):
@@ -500,6 +516,9 @@ def probe(self_ip, all_ips, targets):
     for ip in targets:
         for p in [p for p in (80, 8080, 5000, 443, 8443) if p in ports.get(ip, [])][:2]:
             jobs.append(("http", ip, p))
+    for ip in targets:
+        if 22 in ports.get(ip, []):
+            jobs.append(("ssh", ip, None))
     for ip, v in ssdp.items():
         if ip in all_ips:
             out.setdefault(ip, {})["ssdp_server"] = v["server"]
@@ -508,13 +527,17 @@ def probe(self_ip, all_ips, targets):
 
     def run(job):
         kind, ip, arg = job
+        if kind == "ssh":
+            return job, ssh_banner(ip)
         return job, (http_info(ip, arg) if kind == "http" else upnp_describe(ip, arg))
 
     with ThreadPoolExecutor(max_workers=16) as ex:
         for (kind, ip, _), r in ex.map(run, jobs):
             if not r:
                 continue
-            if kind == "http":
+            if kind == "ssh":
+                out.setdefault(ip, {})["ssh"] = r
+            elif kind == "http":
                 out.setdefault(ip, {}).setdefault("http", []).append(r)
             else:
                 out.setdefault(ip, {})["upnp"] = r
@@ -523,6 +546,106 @@ def probe(self_ip, all_ips, targets):
         e.setdefault("http", [])
         e.setdefault("ports", [])
     return out
+
+
+# ------------------------------------------------------------- local host ---
+_GENERIC = re.compile(r"^(to be filled|system product|system manufacturer|default string|not applicable|"
+                      r"none|o\.?e\.?m|unknown|type1|0123456789|x\.x)", re.I)
+
+
+def _read(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            v = f.read().replace("\0", "").strip()
+            return v if v and not _GENERIC.match(v) else None
+    except OSError:
+        return None
+
+
+def local_info():
+    """Hardware/OS facts about the host lanman runs on."""
+    info = {}
+    dmi = "/sys/class/dmi/id/"
+    vendor, name, version = _read(dmi + "sys_vendor"), _read(dmi + "product_name"), _read(dmi + "product_version")
+    if vendor:
+        info["brand"] = short_brand(vendor.title() if vendor.isupper() else vendor)
+        if version and vendor.upper() == "LENOVO":  # Lenovo keeps the marketing name in product_version
+            info["model"] = "%s (%s)" % (version, name) if name else version
+        else:
+            info["model"] = name
+        chassis = _read(dmi + "chassis_type")
+        info["type"] = "server" if chassis in ("17", "23", "28") else "computer"
+    dt = _read("/proc/device-tree/model")
+    if dt:  # ARM boards
+        info["model"] = dt
+        low = dt.lower()
+        info["brand"] = ("Orange Pi" if "orange pi" in low else "Raspberry Pi" if "raspberry" in low
+                         else dt.split()[0])
+        info["type"] = "server"
+    os_release = {}
+    for line in (_read("/etc/os-release") or "").splitlines():
+        k, _, v = line.partition("=")
+        os_release[k] = v.strip('"')
+    info["os"] = os_release.get("PRETTY_NAME") or os.uname().sysname
+    info["kernel"] = os.uname().release
+    cpu = None
+    for line in (_read("/proc/cpuinfo") or "").splitlines():
+        if line.startswith(("model name", "Hardware")) and not cpu:
+            cpu = line.split(":", 1)[1].strip()
+    info["cpu"] = "%s, %d core" % (re.sub(r"\s+", " ", cpu or "?"), os.cpu_count() or 1)
+    mem = re.search(r"MemTotal:\s+(\d+)", _read("/proc/meminfo") or "")
+    if mem:
+        gb = int(mem.group(1)) / 1048576
+        info["ram"] = "%.1f GB" % gb if gb >= 1 else "%d MB" % (int(mem.group(1)) / 1024)
+    return {k: v for k, v in info.items() if v}
+
+
+# --------------------------------------------------------- operating system ---
+def os_guess(p, apple_model, fire, names, ports, vendor):
+    mdns = p.get("mdns") or {}
+    services = mdns.get("services") or []
+    txt = mdns.get("txt") or {}
+    if (p.get("local") or {}).get("os"):
+        return p["local"]["os"]
+    if apple_model:
+        for prefix, os_name in (("iPhone", "iOS"), ("iPad", "iPadOS"), ("Watch", "watchOS"),
+                                ("AppleTV", "tvOS"), ("AudioAccessory", "audioOS"), ("Mac", "macOS"),
+                                ("iMac", "macOS")):
+            if apple_model.startswith(prefix):
+                return os_name
+    if fire:
+        return "Fire OS"
+    if "_androidtvremote2._tcp" in services:
+        return "Android TV"
+    if "_googlecast._tcp" in services:
+        return "Google Cast"
+    ssh = p.get("ssh") or ""
+    m = re.search(r"deb(\d+)u", ssh)
+    if m:
+        return "Debian %s" % m.group(1)
+    for rx, os_name in ((r"ubuntu", "Ubuntu"), (r"raspbian", "Raspberry Pi OS"), (r"debian", "Debian"),
+                        (r"freebsd", "FreeBSD"), (r"openbsd", "OpenBSD"), (r"windows|for_windows", "Windows"),
+                        (r"rosssh", "MikroTik RouterOS"), (r"dropbear", "Linux embedded")):
+        if re.search(rx, ssh, re.I):
+            return os_name
+    blob = " ".join("%s %s" % (h.get("server") or "", h.get("title") or "") for h in p.get("http") or [])
+    for rx, os_name in ((r"fritz!", "FRITZ!OS"), (r"synology|diskstation", "Synology DSM"),
+                        (r"\(ubuntu\)", "Ubuntu"), (r"\(debian\)", "Debian"), (r"\(raspbian\)", "Raspberry Pi OS"),
+                        (r"win32|win64|microsoft-iis", "Windows"), (r"routeros", "MikroTik RouterOS"),
+                        (r"openwrt|luci", "OpenWrt")):
+        if re.search(rx, blob, re.I):
+            return os_name
+    if vendor and re.search(r"synology", vendor, re.I):
+        return "Synology DSM"
+    if (txt.get("_device-info._tcp") or {}).get("model") == "MacSamba" or "_workstation._tcp" in services:
+        return "Linux"
+    if 62078 in ports:
+        return "iOS"
+    if re.search(r"android|galaxy|pixel|redmi", names, re.I):
+        return "Android"
+    if (p.get("netbios") or {}).get("name") and (3389 in ports or 445 in ports) and 22 not in ports:
+        return "Windows"
+    return None
 
 
 # --------------------------------------------------------- classification ---
@@ -646,6 +769,10 @@ def classify(d, vendor):
         score[t] = score.get(t, 0) + w
 
     brand = model = None
+    local = p.get("local") or {}
+    if local:
+        brand, model = local.get("brand"), local.get("model")
+        vote(local.get("type", "computer"), 20)
     # Apple model identifier
     apple = (txt.get("_device-info._tcp") or {}).get("model") or (txt.get("_airplay._tcp") or {}).get("model") \
         or (txt.get("_raop._tcp") or {}).get("am")
@@ -654,7 +781,7 @@ def classify(d, vendor):
     if apple:
         for prefix, nice, t in APPLE_MODELS:
             if apple.startswith(prefix) and (prefix != "Mac" or re.match(r"Mac\d", apple)):
-                brand, model = "Apple", "%s (%s)" % (nice, apple)
+                brand, model = brand or "Apple", model or "%s (%s)" % (nice, apple)
                 vote(t, 12)
                 break
     if any(s in mdns.get("services", []) for s in ("_companion-link._tcp", "_apple-mobdev2._tcp")):
@@ -747,7 +874,17 @@ def classify(d, vendor):
                  or _clean_host(d.get("hostname")) or _clean_host(mdns.get("hostname")) or nb.get("name"))
     if auto_name and "_workstation._tcp" in (mdns.get("instances") or {}):
         auto_name = re.sub(r"\s*\[[0-9a-f:]{17}\]$", "", auto_name)
+    noun = TYPE_NOUNS[type_]
+    if brand and model:
+        fallback = model if model.lower().startswith(brand.lower()) else "%s %s" % (brand, model)
+    elif brand or model:
+        fallback = "%s %s" % (brand or model, noun)
+    else:
+        fallback = noun[0].upper() + noun[1:]
     return {
+        "display_name": auto_name or fallback,
+        "os": os_guess(p, apple, fire, " ".join(names), ports, vendor),
+        "local": local or None,
         "type": type_,
         "type_guess": best < 4,
         "brand": brand,

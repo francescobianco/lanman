@@ -56,12 +56,15 @@ const ago=t=>{if(!t)return'';const s=Date.now()/1000-t;
   if(s<90)return'ora';if(s<3600)return Math.round(s/60)+' min fa';
   if(s<86400)return Math.round(s/3600)+' h fa';return Math.round(s/86400)+' g fa'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const label=d=>d.name||d.auto_name||'';
+const label=d=>d.name||d.display_name||'';
 try{$('#onlyOn').checked=localStorage.lanmanOnly==='1'}catch(e){}
 
 function detail(d){
   const x=d.details||{},rows=[];
   const add=(k,v)=>{if(v&&(!Array.isArray(v)||v.length))rows.push(`<b>${k}</b><span>${v}</span>`)};
+  const l=d.local||{};
+  add('Sistema operativo',esc(d.os));
+  add('CPU',esc(l.cpu));add('RAM',esc(l.ram));add('Kernel',esc(l.kernel));
   add('Produttore (MAC)',esc(d.vendor||(d.mac&&/^.[26ae]/.test(d.mac)?'MAC privato/randomizzato':'')));
   add('Indirizzi',esc((d.ips||[d.ip]).join(', ')));
   add('Hostname DNS',esc(d.hostname));
@@ -73,6 +76,7 @@ function detail(d){
   add('Server SSDP',esc(x.ssdp_server));
   add('Stampante condivisa',esc(d.shared_printer));
   add('Porte aperte',esc((x.ports||[]).join(', ')));
+  add('SSH',esc(x.ssh));
   add('Web',(x.http||[]).map(h=>`<a href="${h.port==443||h.port==8443||h.port==5001?'https':'http'}://${esc(d.ip)}:${h.port}/" target="_blank">:${h.port}</a> ${esc([h.title,h.server].filter(Boolean).join(' — '))}`).join('<br>'));
   add('Note',esc(d.note));
   add('Visto la prima volta',new Date(d.first_seen*1000).toLocaleString());
@@ -81,7 +85,7 @@ function detail(d){
     `<option value="${k}" ${d.type_override===k?'selected':''}>${esc(l)}</option>`)).join('');
   return `<tr class="det"><td colspan="7"><div class="kv">${rows.join('')}</div>
     <div class="ctl" data-id="${esc(d.id)}">
-      <input id="nm" value="${esc(d.name)}" placeholder="${esc(d.auto_name||'nome')}">
+      <input id="nm" value="${esc(d.name)}" placeholder="${esc(d.display_name)}">
       <select id="ty">${opts}</select>
       <button data-act="save">Salva</button>
       <button data-act="reprobe">Identifica di nuovo</button>
@@ -107,13 +111,13 @@ function render(){
       out.push(`<tr class="grp"><td colspan="7">${esc(names[cur]||cur)}<span>${n.filter(x=>x.online).length}/${n.length}</span></td></tr>`)}
     const tags=(d.is_self?'<span class="tag">questo host</span>':'')+(d.is_gateway?'<span class="tag">gateway</span>':'')
       +(d.type_guess&&d.type!=='unknown'?'<span class="tag" title="tipologia dedotta con pochi indizi">?</span>':'');
-    const sub=d.name&&d.auto_name&&d.name!==d.auto_name?`<span class="sub">${esc(d.auto_name)}</span>`:'';
+    const sub=d.name&&d.display_name&&d.name!==d.display_name?`<span class="sub">${esc(d.display_name)}</span>`:'';
     const extra=(d.ips||[]).length>1?` <span class="mut">+${d.ips.length-1}</span>`:'';
     const rnd=d.mac&&/^.[26ae]/.test(d.mac)?'<span class="tag" title="MAC privato/randomizzato">rnd</span>':'';
     out.push(`<tr class="dev ${d.online?'on':'off'}" data-id="${esc(d.id)}">
       <td><span class="dot" title="${d.online?(d.ping?'online':'online (no ping)'):'offline'}"></span></td>
-      <td>${esc(label(d))||'<span class="mut">—</span>'}${sub}${tags}</td>
-      <td>${esc(d.brand)}</td><td>${esc(d.model)}</td>
+      <td>${esc(label(d))}${sub}${tags}</td>
+      <td>${esc(d.brand)}</td><td>${esc(d.model)}${d.os?`<span class="sub">${esc(d.os)}</span>`:''}</td>
       <td><code>${esc(d.ip)}</code>${extra}</td>
       <td><code>${esc(d.mac)}</code>${rnd}</td>
       <td>${d.online?'online':ago(d.last_seen)}</td></tr>`);

@@ -35,6 +35,7 @@ state = {"iface": None, "network": None, "self_ip": None, "gateway": None,
          "last_scan": None, "scanning": False, "probing": False}
 scan_now = threading.Event()
 vendors = identify.Vendors(DATA_DIR)
+LOCAL = identify.local_info()
 
 
 # ---------------------------------------------------------------- network ---
@@ -145,6 +146,8 @@ def scan():
             d["via_router"] = g["via_router"]
             d["is_gateway"] = gw in g["ips"]
             d["is_self"] = bool(set(mine) & set(g["ips"]))
+            if d["is_self"]:
+                d.setdefault("probe", {})["local"] = LOCAL
             d["last_seen"] = now
             d["online"] = True
             d["ping"] = any(ip in alive for ip in g["ips"])
@@ -167,7 +170,7 @@ def probe():
         online = {d["ip"]: k for k, d in devices.items() if d.get("online")}
         need = [d["ip"] for d in devices.values() if d.get("online") and (
             d.get("reprobe") or not d.get("probed_at") or d.get("probed_ip") != d["ip"]
-            or now - d["probed_at"] > REPROBE_AFTER)]
+            or now - d["probed_at"] > REPROBE_AFTER or d.get("probe_version") != identify.PROBE_VERSION)]
     if not need:
         return
     state["probing"] = True
@@ -183,6 +186,7 @@ def probe():
                 p.update(r)
                 d["probed_at"] = int(now)
                 d["probed_ip"] = ip
+                d["probe_version"] = identify.PROBE_VERSION
                 d.pop("reprobe", None)
             else:  # passive multicast answers from devices not being probed
                 p.update({k: v for k, v in r.items() if v and k in ("mdns", "ssdp_server")})
@@ -249,6 +253,7 @@ def public(key, d):
         "upnp": p.get("upnp"),
         "ssdp_server": p.get("ssdp_server"),
         "ports": p.get("ports"),
+        "ssh": p.get("ssh"),
         "http": p.get("http"),
     }
     return out
