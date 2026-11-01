@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 # ------------------------------------------------------------ device types --
 TYPES = [
     ("router", "Router e rete"),
+    ("vpn", "Connessi in VPN"),
     ("server", "Server e NAS"),
     ("computer", "Computer"),
     ("mobile", "Smartphone e tablet"),
@@ -34,7 +35,7 @@ TYPES = [
 TYPE_KEYS = [k for k, _ in TYPES]
 PROBE_VERSION = 3  # bump when probes change: cached devices get re-identified
 TYPE_NOUNS = {
-    "router": "router", "server": "server", "computer": "computer", "mobile": "smartphone/tablet",
+    "router": "router", "vpn": "client VPN", "server": "server", "computer": "computer", "mobile": "smartphone/tablet",
     "media": "dispositivo multimediale", "printer": "stampante", "camera": "telecamera",
     "iot": "dispositivo smart", "console": "console", "unknown": "dispositivo",
 }
@@ -561,7 +562,7 @@ def link_guess(d, type_, vendor, host_wired, model=None):
         link = (d.get("probe") or {}).get("local", {}).get("link")
         return link, "interfaccia di questo host"
     if d.get("via_router"):
-        return "vpn", "instradato dal router (VPN)"
+        return "vpn", "client remoto instradato dal router"
     if d.get("is_gateway"):
         return None, None
     r = (d.get("router") or {}).get("link")
@@ -1010,6 +1011,9 @@ def classify(d, vendor):
     if "printer" in score and (22 in ports or 445 in ports):
         score["printer"] *= 0.3  # real printers hardly ever run ssh or smb
     score.pop("unknown", None)
+    if d.get("via_router"):  # remote client reaching the LAN through the router's VPN
+        score = {"vpn": 100}
+        model = model or "Client VPN"
     if score:
         type_, best = max(score.items(), key=lambda kv: kv[1])
     else:

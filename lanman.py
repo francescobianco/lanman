@@ -246,7 +246,7 @@ def public(key, d):
     out.update(identify.classify(d, vendor))
     out["link"], out["link_source"] = identify.link_guess(d, out["type"], vendor, state["host_wired"], out.get("model"))
     if d.get("via_router"):
-        out["note"] = "raggiunto tramite il router (VPN / proxy-ARP)"
+        out["note"] = "il router risponde per suo conto (proxy-ARP): MAC e produttore sono quelli del router"
     p = d.get("probe") or {}
     m = p.get("mdns") or {}
     out["details"] = {
