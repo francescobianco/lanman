@@ -9,6 +9,7 @@ The box shows an authorization request (on its display or in the iliadbox /
 Freebox Connect app); once accepted, the app token is stored in
 ~/.lanman/freebox.json (mode 600) and can be revoked from the box UI.
 """
+import functools
 import hashlib
 import hmac
 import json
@@ -17,6 +18,8 @@ import socket
 import time
 import urllib.error
 import urllib.request
+
+print = functools.partial(print, flush=True)  # noqa: A001 - pairing output must show live
 
 APP_ID = "lanman"
 APP_NAME = "lanman"
