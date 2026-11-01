@@ -39,6 +39,17 @@ Invia al box una richiesta di accesso per l'app "lanman", da confermare sul box
 ed è revocabile dall'interfaccia del box. lanman lo usa solo per leggere l'elenco dei
 dispositivi (nomi DHCP, Wi-Fi/cavo, tipo di dispositivo). Il FRITZ!Box non richiede associazione.
 
+## Nomi dei telefoni (ascolto DHCP, facoltativo)
+
+Gli Android/iPhone moderni non espongono nulla in rete: il loro nome (es. "Galaxy-Note9-di-…")
+viaggia solo nella richiesta DHCP che inviano in broadcast quando si collegano al Wi-Fi.
+lanman la legge in modo passivo se può ascoltare sulla porta 67:
+
+    sudo ./install-system.sh            # servizio di sistema, gira col tuo utente + CAP_NET_BIND_SERVICE
+    sudo ./install-system.sh --remove   # torna al servizio utente
+
+Senza questo passo l'ascolto DHCP resta semplicemente disattivato.
+
 ## API
 
 - `GET  /api/devices` — elenco dispositivi

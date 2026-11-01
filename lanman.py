@@ -155,6 +155,8 @@ def scan():
             d["last_seen"] = now
             d["online"] = True
             d["ping"] = any(ip in alive for ip in g["ips"])
+            if key in dhcp_seen:
+                d["dhcp"] = dhcp_seen[key]
             if rhosts is not None:
                 rh = rhosts.get(key) or (rhosts.get("ip:" + d["ip"]) if g["via_router"] else None)
                 if rh:
@@ -203,6 +205,43 @@ def probe():
     state["probing"] = False
 
 
+# ------------------------------------------------------------------- DHCP ---
+dhcp_seen = {}  # mac -> {"hostname", "vendor_class", "seen"}; merged into devices by scan()
+
+
+def dhcp_listener():
+    """Passively read DHCP requests broadcast by clients joining the network:
+    they carry the device name (option 12) and vendor class (option 60).
+    Needs port 67 (CAP_NET_BIND_SERVICE); silently disabled otherwise."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    try:
+        s.bind(("0.0.0.0", 67))
+    except OSError as e:
+        state["dhcp"] = False
+        print("dhcp listener disabled: %s (needs CAP_NET_BIND_SERVICE)" % e, flush=True)
+        return
+    state["dhcp"] = True
+    print("dhcp listener on :67", flush=True)
+    while True:
+        try:
+            data, _ = s.recvfrom(4096)
+            info = identify.parse_dhcp(data)
+        except Exception:
+            continue
+        if info:
+            mac = info.pop("mac")
+            info["seen"] = int(time.time())
+            with lock:
+                prev = dhcp_seen.get(mac) or (devices.get(mac) or {}).get("dhcp") or {}
+                merged = dict(prev, **{k: v for k, v in info.items() if v})
+                dhcp_seen[mac] = merged
+                if mac in devices:
+                    devices[mac]["dhcp"] = merged
+            print("dhcp: %s %s" % (mac, merged), flush=True)
+
+
 def scanner(interval):
     while True:
         for step in (scan, probe):
@@ -244,6 +283,7 @@ def save():
 
 def public(key, d):
     out = {k: v for k, v in d.items() if k not in ("probe", "name", "type", "reprobe", "router")}
+    out["dhcp_listener"] = state.get("dhcp")
     out["router_name"] = (d.get("router") or {}).get("name")
     out["id"] = key
     vendor = None if d.get("via_router") else vendors.lookup(d.get("mac"))
@@ -334,6 +374,7 @@ def main():
         raise SystemExit(0 if freebox.pair(state["gateway"], fbx.path) else 1)
     load()
     vendors.load()
+    threading.Thread(target=dhcp_listener, daemon=True).start()
     threading.Thread(target=scanner, args=(a.interval,), daemon=True).start()
     print("lanman on http://%s:%d  (%s, %s, gw %s)" % (a.bind, a.port, iface, net, state["gateway"]), flush=True)
     ThreadingHTTPServer((a.bind, a.port), Handler).serve_forever()

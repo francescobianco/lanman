@@ -781,6 +781,12 @@ def os_guess(p, apple_model, fire, names, ports, vendor):
     txt = mdns.get("txt") or {}
     if (p.get("local") or {}).get("os"):
         return p["local"]["os"]
+    vc = p.get("dhcp_vendor_class") or ""
+    m = re.match(r"android-dhcp-(\d+)", vc)
+    if m:
+        return "Android %s" % m.group(1)
+    if vc.startswith("MSFT"):
+        return "Windows"
     if apple_model:
         for prefix, os_name in (("iPhone", "iOS"), ("iPad", "iPadOS"), ("Watch", "watchOS"),
                                 ("AppleTV", "tvOS"), ("AudioAccessory", "audioOS"), ("Mac", "macOS"),
@@ -820,6 +826,57 @@ def os_guess(p, apple_model, fire, names, ports, vendor):
     if (p.get("netbios") or {}).get("name") and (3389 in ports or 445 in ports) and 22 not in ports:
         return "Windows"
     return None
+
+
+# ------------------------------------------------------------------- DHCP ---
+def parse_dhcp(data):
+    """BOOTREQUEST -> {"mac", "hostname", "vendor_class", "requested_ip"} or None."""
+    if len(data) < 240 or data[0] != 1 or data[236:240] != b"\x63\x82\x53\x63":
+        return None
+    hlen = data[2]
+    if hlen != 6:
+        return None
+    mac = ":".join("%02x" % b for b in data[28:34])
+    opts, i = {}, 240
+    while i < len(data):
+        code = data[i]
+        if code == 255:
+            break
+        if code == 0:
+            i += 1
+            continue
+        n = data[i + 1]
+        opts[code] = data[i + 2:i + 2 + n]
+        i += 2 + n
+    txt = lambda b: b.decode("utf-8", "replace").strip("\0 ") or None  # noqa: E731
+    return {
+        "mac": mac,
+        "hostname": txt(opts[12]) if 12 in opts else None,
+        "vendor_class": txt(opts[60]) if 60 in opts else None,
+        "requested_ip": socket.inet_ntoa(opts[50]) if len(opts.get(50, b"")) == 4 else None,
+    }
+
+
+# brand / model from user-visible device names ("Galaxy-Note9-di-Francesco", "Redmi-Note-12", "Pixel-7a")
+NAME_MODELS = [
+    (r"galaxy[-_ ]?((?:note|tab[-_ ]?s?|[a-z])\d+[a-z]?(?:[-_ ]?(?:plus|ultra|lite|fe|edge|5g))?)", "Samsung", "Galaxy %s"),
+    (r"(redmi[-_ ]?(?:note[-_ ]?)?\d+[a-z]?(?:[-_ ]?pro)?)", "Xiaomi", "%s"),
+    (r"(poco[-_ ]?[a-z]\d+(?:[-_ ]?pro)?)", "Xiaomi", "%s"),
+    (r"pixel[-_ ]?(\d+[a-z]?(?:[-_ ]?(?:pro|xl|a))?)", "Google", "Pixel %s"),
+    (r"(oneplus[-_ ]?\w+)", "OnePlus", "%s"),
+    (r"(iphone(?:[-_ ]?\d+)?(?:[-_ ]?(?:pro|max|mini|plus))*)", "Apple", "%s"),
+    (r"(ipad(?:[-_ ]?(?:pro|air|mini))?)", "Apple", "%s"),
+]
+
+
+def name_model(names):
+    for n in names:
+        for rx, brand, fmt in NAME_MODELS:
+            m = re.search(rx, n, re.I)
+            if m:
+                model = fmt % re.sub(r"[-_]+", " ", m.group(1)).strip()
+                return brand, model[0].upper() + model[1:]
+    return None, None
 
 
 # --------------------------------------------------------- classification ---
@@ -1052,7 +1109,7 @@ def classify(d, vendor):
                 for t, w in votes:
                     vote(t, w)
     router = d.get("router") or {}
-    rname = router.get("name")
+    rname = router.get("name") or (d.get("dhcp") or {}).get("hostname")
     rtype = freebox.HOST_TYPES.get(router.get("host_type"))
     if rtype:
         vote(rtype, 10)  # type known to the router (Freebox host_type)
@@ -1082,6 +1139,9 @@ def classify(d, vendor):
             model = model or m.group(1).strip()
     if SMART_ASSISTANT.search((model or "") + " " + joined):
         vote("iot", 30)  # declared model beats the generic cast hints
+    nb_brand, nb_model = name_model(names)
+    if nb_model and not model:
+        brand, model = brand or nb_brand, nb_model
     tapo_web = any("SHIP 2.0" in ((h.get("title") or "") + (h.get("server") or "")) for h in https)
     if (vendor and "tp-link" in vendor.lower()) or tapo_web:
         for n in names:
@@ -1140,6 +1200,7 @@ def classify(d, vendor):
         fallback = noun[0].upper() + noun[1:]
     if box and auto_name and re.search(r"freebox", auto_name, re.I) and box[0] != "Free":
         auto_name = None  # Iliad boxes advertise themselves as "Freebox Server"
+    p = dict(p, dhcp_vendor_class=(d.get("dhcp") or {}).get("vendor_class"))
     os_name = (box and box[2]) or (di.get("firmware") and "firmware " + re.sub(r" Rel\..*", "", di["firmware"])) \
         or os_guess(p, apple, fire, " ".join(names), ports, vendor)
     if not os_name:
