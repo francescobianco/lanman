@@ -809,12 +809,9 @@ def os_guess(p, apple_model, fire, names, ports, vendor):
     txt = mdns.get("txt") or {}
     if (p.get("local") or {}).get("os"):
         return p["local"]["os"]
-    vc = p.get("dhcp_vendor_class") or ""
-    m = re.match(r"android-dhcp-(\d+)", vc)
-    if m:
-        return "Android %s" % m.group(1)
-    if vc.startswith("MSFT"):
-        return "Windows"
+    dos = dhcp_os(p.get("dhcp_params"), p.get("dhcp_vendor_class"))
+    if dos:
+        return dos
     if apple_model:
         for prefix, os_name in (("iPhone", "iOS"), ("iPad", "iPadOS"), ("Watch", "watchOS"),
                                 ("AppleTV", "tvOS"), ("AudioAccessory", "audioOS"), ("Mac", "macOS"),
@@ -882,7 +879,28 @@ def parse_dhcp(data):
         "hostname": txt(opts[12]) if 12 in opts else None,
         "vendor_class": txt(opts[60]) if 60 in opts else None,
         "requested_ip": socket.inet_ntoa(opts[50]) if len(opts.get(50, b"")) == 4 else None,
+        "params": ",".join(str(b) for b in opts[55]) if 55 in opts else None,
     }
+
+
+def dhcp_os(params, vendor_class):
+    """OS from the DHCP parameter request list (option 55) fingerprint."""
+    vc = vendor_class or ""
+    m = re.match(r"android-dhcp-(\d+)", vc)
+    if m:
+        return "Android %s" % m.group(1)
+    if vc.startswith("MSFT"):
+        return "Windows"
+    p = (params or "").split(",")
+    if not p or p == [""]:
+        return None
+    if p[:2] == ["1", "121"] and "252" in p:  # Apple: macOS also asks for LDAP/NetBIOS (95, 44, 46)
+        return "macOS" if "95" in p or "44" in p else "iOS / iPadOS"
+    if "249" in p and "43" in p and "44" in p:
+        return "Windows"
+    if p[:3] == ["1", "3", "6"] and "26" in p and "114" in p:
+        return "Android"
+    return None
 
 
 # brand / model from user-visible device names ("Galaxy-Note9-di-Francesco", "Redmi-Note-12", "Pixel-7a")
@@ -1171,6 +1189,15 @@ def classify(d, vendor):
         vote("iot", 30)  # declared model beats the generic cast hints
     if vendor and re.search(r"netronix|ntx electronics|rakuten kobo", vendor, re.I) and not model:
         model = "e-reader (Kobo / Tolino)"
+    dos = dhcp_os((d.get("dhcp") or {}).get("params"), (d.get("dhcp") or {}).get("vendor_class"))
+    if dos == "macOS":
+        brand = brand or "Apple"
+        vote("computer", 8)
+    elif dos == "iOS / iPadOS":
+        brand = brand or "Apple"
+        vote("mobile", 8)
+    elif dos and dos.startswith("Android"):
+        vote("mobile", 4)
     nb_brand, nb_model = name_model(names)
     if nb_model and not model:
         brand, model = brand or nb_brand, nb_model
@@ -1232,7 +1259,8 @@ def classify(d, vendor):
         fallback = noun[0].upper() + noun[1:]
     if box and auto_name and re.search(r"freebox", auto_name, re.I) and box[0] != "Free":
         auto_name = None  # Iliad boxes advertise themselves as "Freebox Server"
-    p = dict(p, dhcp_vendor_class=(d.get("dhcp") or {}).get("vendor_class"))
+    p = dict(p, dhcp_vendor_class=(d.get("dhcp") or {}).get("vendor_class"),
+             dhcp_params=(d.get("dhcp") or {}).get("params"))
     os_name = (box and box[2]) or (di.get("firmware") and "firmware " + re.sub(r" Rel\..*", "", di["firmware"])) \
         or os_guess(p, apple, fire, " ".join(names), ports, vendor)
     if not os_name:

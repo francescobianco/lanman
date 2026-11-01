@@ -88,7 +88,7 @@ function card(d){
   add('Hostname DNS',d.hostname);
   add('Hostname mDNS',x.mdns_hostname);
   add('Nome nel router',d.router_name);
-  add('Nome DHCP',d.dhcp&&d.dhcp.hostname);add('DHCP vendor class',d.dhcp&&d.dhcp.vendor_class);
+  add('Nome DHCP',d.dhcp&&d.dhcp.hostname);add('DHCP vendor class',d.dhcp&&d.dhcp.vendor_class);add('DHCP impronta (opz. 55)',d.dhcp&&d.dhcp.params);
   add('NetBIOS',x.netbios&&[x.netbios.name,x.netbios.group].filter(Boolean).join(' / '));
   add('Servizi mDNS',(x.mdns_services||[]).join('  '));
   add('UPnP',x.upnp&&[x.upnp.friendlyName,x.upnp.manufacturer,x.upnp.modelName,x.upnp.modelNumber,
