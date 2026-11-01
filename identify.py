@@ -738,6 +738,18 @@ HTTP_TYPES = [
     (r"tasmota|shelly|esphome|wled|tuya", ("iot", 8)),
     (r"caddy|apache|nginx|traefik|vtiger|qbittorrent|transmission|jellyfin|grafana|gitea|wordpress", ("server", 3)),
 ]
+# ISP / consumer gateways, matched on names + web titles: (regex, brand, model, os)
+ISP_BOXES = [
+    (r"iliadbox", "Iliad", "Iliadbox", "iliadbox OS"),
+    (r"freebox", "Free", "Freebox", "Freebox OS"),
+    (r"vodafone.?(station|power ?station)", "Vodafone", "Vodafone Station", None),
+    (r"tim.?hub|timhub", "TIM", "TIM HUB", None),
+    (r"fastgate", "Fastweb", "FASTGate", None),
+    (r"sky.?wi-?fi.?hub|skyhub", "Sky", "Sky Wi-Fi Hub", None),
+    (r"windtre|wind tre|infostrada", "WindTre", "WindTre Router", None),
+    (r"livebox", "Orange", "Livebox", None),
+    (r"bbox", "Bouygues", "Bbox", None),
+]
 APPLE_MODELS = [
     ("iPhone", "iPhone", "mobile"), ("iPad", "iPad", "mobile"), ("Watch", "Apple Watch", "mobile"),
     ("MacBookPro", "MacBook Pro", "computer"), ("MacBookAir", "MacBook Air", "computer"),
@@ -852,6 +864,14 @@ def classify(d, vendor):
         m = re.search(r"(FRITZ!(?:Box|Repeater|Powerline)[\w ]*\d[\w ]*)", h.get("title") or "")
         if m:
             model = model or m.group(1).strip()
+    box = None
+    blob_all = (joined + " " + " ".join("%s %s" % (h.get("title") or "", h.get("server") or "") for h in https)).lower()
+    for rx, b_brand, b_model, b_os in ISP_BOXES:
+        if re.search(rx, blob_all):
+            box = (b_brand, b_model, b_os)
+            brand, model = b_brand, model if model and b_model.lower() in model.lower() else b_model
+            vote("router", 10)
+            break
     if d.get("is_gateway"):
         vote("router", 20)
     if is_random_mac(d.get("mac")) and not d.get("is_self"):
@@ -881,9 +901,16 @@ def classify(d, vendor):
         fallback = "%s %s" % (brand or model, noun)
     else:
         fallback = noun[0].upper() + noun[1:]
+    if box and auto_name and re.search(r"freebox", auto_name, re.I) and box[0] != "Free":
+        auto_name = None  # Iliad boxes advertise themselves as "Freebox Server"
+    os_name = (box and box[2]) or os_guess(p, apple, fire, " ".join(names), ports, vendor)
+    if not os_name:
+        m = next((re.match(r"^([\w!][\w! .-]{1,30}) OS$", h.get("title") or "") for h in https
+                  if re.match(r"^[\w!][\w! .-]{1,30} OS$", h.get("title") or "")), None)
+        os_name = m.group(0) if m else None
     return {
         "display_name": auto_name or fallback,
-        "os": os_guess(p, apple, fire, " ".join(names), ports, vendor),
+        "os": os_name,
         "local": local or None,
         "type": type_,
         "type_guess": best < 4,
