@@ -464,6 +464,7 @@ class Handler(BaseHTTPRequestHandler):
                     "scanning": state["scanning"],
                     "probing": state["probing"],
                     "types": identify.TYPES,
+                    "ntfy": notify.target(DATA_DIR),
                     "devices": [public(k, d) for k, d in devices.items()],
                 }
             return self.send(200, json.dumps(payload))

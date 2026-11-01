@@ -52,6 +52,7 @@ code{font:12px ui-monospace,monospace}
 <th data-k="ip">IP</th><th data-k="mac">MAC</th><th data-k="last_seen">Visto</th></tr></thead>
 <tbody id="tb"></tbody></table></div>
 <p class="mut" id="foot"></p>
+<p class="mut" id="ntfy" hidden></p>
 </main>
 <script>
 let data={devices:[],types:[]},sortK='ip',sortD=1,open=null,clicked=0;
@@ -162,6 +163,10 @@ function render(){
   const on=data.devices.filter(d=>st(d)==='on').length,idle=data.devices.filter(d=>st(d)==='idle').length;
   $('#cnt').textContent=`${on} online${idle?` · ${idle} in standby`:''} / ${data.devices.length}`;
   $('#net').textContent=`${data.network||''} su ${data.iface||''}`;
+  const nt=$('#ntfy');
+  if(data.ntfy){const u=data.ntfy,app='ntfy://'+u.replace(/^https?:\/\//,'');
+    nt.innerHTML=`Notifiche: <a href="${esc(app)}">iscriviti con l'app ntfy</a> · <a href="${esc(u)}" target="_blank">apri nel browser</a>`;
+    nt.hidden=false}else nt.hidden=true;
   const busy=data.scanning||data.probing||Date.now()-clicked<4000;
   $('#scan').disabled=busy;$('#scan').textContent=busy?'Scansione…':'Scansiona';
   $('#foot').textContent=data.scanning?'scansione in corso…':data.probing?'identificazione dispositivi in corso…':
