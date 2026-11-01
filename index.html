@@ -16,6 +16,9 @@ button,select,input{font:inherit;color:var(--fg);background:none;border:1px soli
 select{background:var(--bg)}
 button{cursor:pointer}
 button:hover{border-color:var(--acc)}
+a{color:inherit;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
+a:hover{color:var(--acc);text-decoration-color:currentColor}
+.bar{display:flex;justify-content:space-between;align-items:baseline;gap:8px 16px;flex-wrap:wrap;margin:16px 0}
 button:disabled{opacity:.5;cursor:default}
 button:disabled:hover{border-color:var(--line)}
 .wrap{overflow-x:auto}
@@ -51,8 +54,7 @@ code{font:12px ui-monospace,monospace}
 <thead><tr><th></th><th data-k="label">Nome</th><th data-k="brand">Marca</th><th data-k="model">Modello</th>
 <th data-k="ip">IP</th><th data-k="mac">MAC</th><th data-k="last_seen">Visto</th></tr></thead>
 <tbody id="tb"></tbody></table></div>
-<p class="mut" id="foot"></p>
-<p class="mut" id="ntfy" hidden></p>
+<div class="bar mut"><span id="foot"></span><span id="ntfy" hidden></span></div>
 </main>
 <script>
 let data={devices:[],types:[]},sortK='ip',sortD=1,open=null,clicked=0;
@@ -165,7 +167,7 @@ function render(){
   $('#net').textContent=`${data.network||''} su ${data.iface||''}`;
   const nt=$('#ntfy');
   if(data.ntfy){const u=data.ntfy,app='ntfy://'+u.replace(/^https?:\/\//,'');
-    nt.innerHTML=`Notifiche: <a href="${esc(app)}">iscriviti con l'app ntfy</a> · <a href="${esc(u)}" target="_blank">apri nel browser</a>`;
+    nt.innerHTML=`ntfy: <a href="${esc(app)}" title="iscriviti con l'app ntfy">app</a> · <a href="${esc(u)}" target="_blank" title="apri il canale nel browser">web</a>`;
     nt.hidden=false}else nt.hidden=true;
   const busy=data.scanning||data.probing||Date.now()-clicked<4000;
   $('#scan').disabled=busy;$('#scan').textContent=busy?'Scansione…':'Scansiona';
