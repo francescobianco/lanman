@@ -80,12 +80,15 @@ function card(d){
   add('CPU',l.cpu);add('RAM',l.ram);add('Kernel',l.kernel);
   add('Stato',d.online?'online':'offline, visto '+fmt(d.last_seen));
   add('Connessione',d.link&&`${LINKS[d.link]} (${d.link_source})`);
+  const LAY={ping:'ping',arp:'ARP',dhcp:'DHCP',router:'router',mdns:'mDNS',ssdp:'SSDP'};
+  add('Rilevato da',Object.entries(d.seen_by||{}).sort((a,b)=>b[1]-a[1]).map(([k,t])=>`${LAY[k]||k} (${ago(t)})`).join(', '));
   add('Indirizzi IP',(d.ips||[d.ip]).join(', '));
   add('MAC',d.mac);
   add('Produttore (MAC)',d.vendor||(d.mac&&/^.[26ae]/.test(d.mac)?'MAC privato/randomizzato':''));
   add('Hostname DNS',d.hostname);
   add('Hostname mDNS',x.mdns_hostname);
   add('Nome nel router',d.router_name);
+  add('Nome DHCP',d.dhcp&&d.dhcp.hostname);add('DHCP vendor class',d.dhcp&&d.dhcp.vendor_class);
   add('NetBIOS',x.netbios&&[x.netbios.name,x.netbios.group].filter(Boolean).join(' / '));
   add('Servizi mDNS',(x.mdns_services||[]).join('  '));
   add('UPnP',x.upnp&&[x.upnp.friendlyName,x.upnp.manufacturer,x.upnp.modelName,x.upnp.modelNumber,
@@ -139,7 +142,7 @@ function render(){
     const extra=(d.ips||[]).length>1?` <span class="mut">+${d.ips.length-1}</span>`:'';
     const rnd=d.mac&&/^.[26ae]/.test(d.mac)?'<span class="tag" title="MAC privato/randomizzato">rnd</span>':'';
     out.push(`<tr class="dev ${d.online?'on':'off'}" data-id="${esc(d.id)}">
-      <td><span class="dot" title="${d.online?(d.ping?'online':'online (no ping)'):'offline'}"></span>${linkIcon(d)}</td>
+      <td><span class="dot" title="${d.online?(d.ping?'online':'online (visto da: '+Object.keys(d.seen_by||{}).join(', ')+')'):'offline'}"></span>${linkIcon(d)}</td>
       <td>${esc(label(d))}${tags}</td>
       <td>${esc(d.brand)}</td><td>${esc(d.model)}${d.os?`<span class="${d.model?'sub':'mut'}">${esc(d.os)}</span>`:''}</td>
       <td><code>${esc(d.ip)}</code>${extra}</td>

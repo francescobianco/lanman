@@ -101,24 +101,23 @@ def ipn(ip):
 
 
 # ------------------------------------------------------------------- scan ---
+ONLINE_GRACE = 300  # a device stays online this long after any layer last saw it
+LAYERS = ("ping", "arp", "dhcp", "router", "mdns", "ssdp")
+passive = {}  # ip -> {"mdns": ts, "ssdp": ts}, filled by probe()
+
+
 def scan():
+    """Overlay several discovery layers by IP, then fold IPs into devices by MAC."""
     iface, net = state["iface"], state["network"]
     state["scanning"] = True
+    now = int(time.time())
     hosts = [str(h) for h in net.hosts()]
     with ThreadPoolExecutor(max_workers=64) as ex:
         alive = {ip for ip, ok in zip(hosts, ex.map(ping, hosts)) if ok}
     neigh = neighbours(iface)
     mymac = own_mac(iface)
     mine = [str(i.ip) for i in own_ips(iface) if i.ip in net]
-    for ip in mine:
-        neigh[ip] = mymac
-    online = alive | set(neigh)
-    ips = sorted(online, key=ipn)
-    with ThreadPoolExecutor(max_workers=16) as ex:
-        names = dict(zip(ips, ex.map(resolve, ips)))
-    names.update({ip: socket.gethostname() for ip in mine})
     gw = state["gateway"]
-    gw_mac = neigh.get(gw)
     rhosts = None
     if gw and (state["router_api"] is None or state["router_api"] is True or time.time() - state["router_api"] > 600):
         rhosts = fbx.hosts(gw)  # paired Iliadbox / Freebox
@@ -126,15 +125,62 @@ def scan():
             rhosts = identify.router_hosts(gw)  # FRITZ!Box; retry unsupported routers every 10 min
         state["router_api"] = True if rhosts is not None else time.time()
 
+    # --- layers: ip -> set of layers that saw it in this round; ip -> mac when known
+    seen, macs = {}, {}
+
+    def saw(ip, layer, mac=None):
+        try:
+            if ipaddress.ip_address(ip) not in net:
+                return
+        except ValueError:
+            return
+        seen.setdefault(ip, set()).add(layer)
+        if mac:
+            macs.setdefault(ip, mac)
+
+    for ip in alive:
+        saw(ip, "ping")
+    for ip, mac in neigh.items():
+        saw(ip, "arp", mac)
+    for ip in mine:
+        saw(ip, "arp", mymac)
+    for key, r in (rhosts or {}).items():
+        if r.get("active") and r.get("ip"):
+            saw(r["ip"], "router", None if key.startswith("ip:") else key)
+    with lock:
+        for mac, info in dhcp_seen.items():
+            if info.get("requested_ip") and now - info.get("seen", 0) < ONLINE_GRACE:
+                saw(info["requested_ip"], "dhcp", mac)
+    for ip, layers in passive.items():
+        for layer, ts in layers.items():
+            if now - ts < ONLINE_GRACE:
+                saw(ip, layer)
+
+    ips = sorted(seen, key=ipn)
+    names = identify.reverse_dns(gw, ips) if gw else {}  # gateway DNS knows DHCP names
+    missing = [ip for ip in ips if ip not in names]
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        names.update({ip: n for ip, n in zip(missing, ex.map(resolve, missing)) if n})
+    names.update({ip: socket.gethostname() for ip in mine})
+    gw_mac = macs.get(gw)
+
     # group addresses by device key
     groups = {}
     for ip in ips:
-        mac = neigh.get(ip)
+        mac = macs.get(ip)
         via_router = bool(mac and gw_mac and mac == gw_mac and ip != gw)  # proxy-ARP (VPN clients)
         key = mac if mac and not via_router else "ip:" + ip
-        groups.setdefault(key, {"ips": [], "mac": mac, "via_router": via_router})["ips"].append(ip)
+        g = groups.setdefault(key, {"ips": [], "mac": mac, "via_router": via_router, "layers": set()})
+        g["ips"].append(ip)
+        g["layers"] |= seen[ip]
+    # a DNS name claimed by several devices is a stale/confused lease (e.g. behind MAC-NAT extenders)
+    owners = {}
+    for key, g in groups.items():
+        for ip in g["ips"]:
+            if names.get(ip):
+                owners.setdefault(names[ip].lower(), set()).add(key)
+    ambiguous = {n for n, ks in owners.items() if len(ks) > 1}
 
-    now = int(time.time())
     with lock:
         for key, g in groups.items():
             if g["mac"] and not g["via_router"]:
@@ -153,8 +199,10 @@ def scan():
             if d["is_self"]:
                 d.setdefault("probe", {})["local"] = LOCAL
             d["last_seen"] = now
-            d["online"] = True
             d["ping"] = any(ip in alive for ip in g["ips"])
+            sb = d.setdefault("seen_by", {})
+            for layer in g["layers"]:
+                sb[layer] = now
             if key in dhcp_seen:
                 d["dhcp"] = dhcp_seen[key]
             if rhosts is not None:
@@ -163,13 +211,16 @@ def scan():
                     d["router"] = rh
                 else:
                     d.pop("router", None)
-            host = next((names[ip] for ip in g["ips"] if names.get(ip) and names[ip] != "_gateway"), None)
+            host = next((names[ip] for ip in g["ips"] if names.get(ip) and names[ip] != "_gateway"
+                         and names[ip].lower() not in ambiguous), None)
             if host:
                 d["hostname"] = host
+            elif d.get("hostname", "").lower() in ambiguous:
+                d.pop("hostname", None)
         for key, d in devices.items():
             if key not in groups:
-                d["online"] = False
                 d["ping"] = False
+            d["online"] = now - d.get("last_seen", 0) < ONLINE_GRACE
         state["last_scan"] = now
         save()
     state["scanning"] = False
@@ -179,8 +230,9 @@ def probe():
     """Identify devices that are new, moved, stale or flagged for re-probe."""
     now = time.time()
     with lock:
-        online = {d["ip"]: k for k, d in devices.items() if d.get("online")}
-        need = [d["ip"] for d in devices.values() if d.get("online") and (
+        online = {ip: k for k, d in devices.items() if d.get("online") for ip in d.get("ips") or [d["ip"]]}
+        need = [d["ip"] for d in devices.values()
+                if d.get("last_seen", 0) >= (state["last_scan"] or 0) and (
             not d.get("probed_at") or d.get("probed_ip") != d["ip"]
             or now - d["probed_at"] > REPROBE_AFTER or d.get("probe_version") != identify.PROBE_VERSION)]
     if not need:
@@ -201,6 +253,10 @@ def probe():
                 d["probe_version"] = identify.PROBE_VERSION
             else:  # passive multicast answers from devices not being probed
                 p.update({k: v for k, v in r.items() if v and k in ("mdns", "ssdp_server")})
+            if r.get("mdns"):
+                passive.setdefault(ip, {})["mdns"] = int(now)
+            if r.get("ssdp_server") or r.get("upnp"):
+                passive.setdefault(ip, {})["ssdp"] = int(now)
         save()
     state["probing"] = False
 

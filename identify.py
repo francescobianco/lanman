@@ -212,6 +212,34 @@ def dns_parse(data):
     return recs
 
 
+def reverse_dns(server, ips, timeout=2):
+    """PTR lookups sent straight to the gateway's DNS (it knows the DHCP names,
+    and the system resolver may be pointing to a VPN). -> {ip: name}"""
+    out = {}
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError:
+        return out
+    with s:
+        for i, ip in enumerate(ips):
+            q = dns_query([(".".join(reversed(ip.split("."))) + ".in-addr.arpa", 12)])
+            q = struct.pack(">HH", i + 1, 0x0100) + q[4:]  # id, recursion desired
+            try:
+                s.sendto(q, (server, 53))
+            except OSError:
+                return out
+
+        def handle(data, src):
+            if src != server:
+                return
+            qid = struct.unpack_from(">H", data)[0]
+            for name, rtype, val in dns_parse(data):
+                if rtype == 12 and 0 < qid <= len(ips):
+                    out[ips[qid - 1]] = val
+        _recv_all(s, timeout, handle)
+    return out
+
+
 MDNS = ("224.0.0.251", 5353)
 SERVICES_ENUM = "_services._dns-sd._udp.local"
 INTERESTING = [
@@ -1109,7 +1137,7 @@ def classify(d, vendor):
                 for t, w in votes:
                     vote(t, w)
     router = d.get("router") or {}
-    rname = router.get("name") or (d.get("dhcp") or {}).get("hostname")
+    rname = (d.get("dhcp") or {}).get("hostname") or router.get("name")
     rtype = freebox.HOST_TYPES.get(router.get("host_type"))
     if rtype:
         vote(rtype, 10)  # type known to the router (Freebox host_type)
@@ -1188,7 +1216,7 @@ def classify(d, vendor):
                  or next((v for k, v in (mdns.get("instances") or {}).items()
                           if k in ("_device-info._tcp", "_companion-link._tcp", "_airplay._tcp", "_googlecast._tcp",
                                    "_ipp._tcp", "_hap._tcp", "_smb._tcp", "_workstation._tcp")), None)
-                 or _clean_host(d.get("hostname")) or rname or _clean_host(mdns.get("hostname")) or nb.get("name"))
+                 or rname or _clean_host(d.get("hostname")) or _clean_host(mdns.get("hostname")) or nb.get("name"))
     if auto_name and "_workstation._tcp" in (mdns.get("instances") or {}):
         auto_name = re.sub(r"\s*\[[0-9a-f:]{17}\]$", "", auto_name)
     noun = TYPE_NOUNS[type_]
