@@ -13,6 +13,7 @@ import re
 import socket
 import ssl
 import struct
+import subprocess
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -31,7 +32,7 @@ TYPES = [
     ("unknown", "Sconosciuti"),
 ]
 TYPE_KEYS = [k for k, _ in TYPES]
-PROBE_VERSION = 2  # bump when probes change: cached devices get re-identified
+PROBE_VERSION = 3  # bump when probes change: cached devices get re-identified
 TYPE_NOUNS = {
     "router": "router", "server": "server", "computer": "computer", "mobile": "smartphone/tablet",
     "media": "dispositivo multimediale", "printer": "stampante", "camera": "telecamera",
@@ -489,8 +490,102 @@ def http_info(ip, port):
     return {"port": port, "title": title, "server": server}
 
 
+# ------------------------------------------------------------ round trip ---
+def rtt(ip):
+    """-> {"min": ms, "mdev": ms} from 5 quick pings, or None."""
+    out = subprocess.run(["ping", "-c", "5", "-i", "0.2", "-W", "1", "-n", "-q", ip],
+                         capture_output=True, text=True).stdout
+    m = re.search(r"= ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+) ms", out)
+    return {"min": float(m.group(1)), "mdev": float(m.group(4))} if m else None
+
+
+# ------------------------------------------------------- router host table ---
+TR064 = ('<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+         's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
+         '<u:{a} xmlns:u="urn:dslforum-org:service:Hosts:1">{args}</u:{a}></s:Body></s:Envelope>')
+
+
+def _tr064(gw, action, args=""):
+    req = urllib.request.Request(
+        "http://%s:49000/upnp/control/hosts" % gw, data=TR064.format(a=action, args=args).encode(),
+        headers={"Content-Type": 'text/xml; charset="utf-8"',
+                 "SoapAction": "urn:dslforum-org:service:Hosts:1#" + action})
+    with urllib.request.urlopen(req, timeout=3) as r:
+        return r.read(65536).decode("utf-8", "replace")
+
+
+def router_hosts(gw):
+    """FRITZ!Box host table via TR-064 (readable without login from the LAN).
+
+    -> {mac or "ip:<addr>": {"name", "link", "active", "ip"}} or None if unsupported
+    """
+    try:
+        n = int(re.search(r"<NewHostNumberOfEntries>(\d+)<", _tr064(gw, "GetHostNumberOfEntries")).group(1))
+    except Exception:
+        return None
+
+    def entry(i):
+        try:
+            return _tr064(gw, "GetGenericHostEntry", "<NewIndex>%d</NewIndex>" % i)
+        except Exception:
+            return ""
+
+    out = {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for xml in ex.map(entry, range(min(n, 512))):
+            f = dict(re.findall(r"<New(\w+)>([^<]*)<", xml))
+            if not f:
+                continue
+            name = f.get("HostName") or None
+            if name and re.fullmatch(r"PC-\d+-\d+-\d+-\d+", name):  # FRITZ!Box placeholder
+                name = None
+            mac = (f.get("MACAddress") or "").lower()
+            out[mac or "ip:" + f.get("IPAddress", "")] = {
+                "name": name, "ip": f.get("IPAddress"), "active": f.get("Active") == "1",
+                "link": {"802.11": "wifi", "Ethernet": "wired"}.get(f.get("InterfaceType")),
+            }
+    return out
+
+
+WIFI_ONLY_VENDORS = re.compile(r"espressif|azurewave|murata|fn-link|chongqing fugui|tuya|shelly|allterco|"
+                               r"itead|universal global scientific|hui zhou gaoshengda|realtek semiconductor", re.I)
+
+
+WIFI_ONLY_MODELS = re.compile(r"fire tv \(aft(ss|mm|ka|sss|t)|chromecast|home mini|nest mini|nest audio|"
+                              r"echo dot|tapo [hplts]", re.I)
+
+
+def link_guess(d, type_, vendor, host_wired, model=None):
+    """-> (link, source): link in wifi / wired / vpn / None."""
+    if d.get("is_self"):
+        link = (d.get("probe") or {}).get("local", {}).get("link")
+        return link, "interfaccia di questo host"
+    if d.get("via_router"):
+        return "vpn", "instradato dal router (VPN)"
+    if d.get("is_gateway"):
+        return None, None
+    r = (d.get("router") or {}).get("link")
+    if r:
+        return r, "tabella del router"
+    if is_random_mac(d.get("mac")):
+        return "wifi", "MAC privato (solo Wi-Fi)"
+    t = (d.get("probe") or {}).get("rtt")
+    if host_wired and t:
+        if t["min"] < 0.8 and t["mdev"] < 0.2:
+            return "wired", "tempo di risposta (%.2f ms)" % t["min"]
+        if t["min"] > 1.0 or t["mdev"] > 0.3:
+            return "wifi", "tempo di risposta (%.2f ms ±%.2f)" % (t["min"], t["mdev"])
+    if type_ == "mobile":
+        return "wifi", "tipo di dispositivo"
+    if model and WIFI_ONLY_MODELS.search(model):
+        return "wifi", "modello senza porta Ethernet"
+    if vendor and WIFI_ONLY_VENDORS.search(vendor):
+        return "wifi", "produttore di moduli Wi-Fi"
+    return None, None
+
+
 # ------------------------------------------------------------ probe round ---
-def probe(self_ip, all_ips, targets):
+def probe(self_ip, all_ips, targets, measure_rtt=False):
     """Run every probe. Network-wide ones (mDNS, SSDP) cover all_ips, the
     per-host ones (NetBIOS, ports, HTTP, UPnP description) only targets.
 
@@ -519,6 +614,8 @@ def probe(self_ip, all_ips, targets):
     for ip in targets:
         if 22 in ports.get(ip, []):
             jobs.append(("ssh", ip, None))
+        if measure_rtt and ip != self_ip:
+            jobs.append(("rtt", ip, None))
     for ip, v in ssdp.items():
         if ip in all_ips:
             out.setdefault(ip, {})["ssdp_server"] = v["server"]
@@ -529,14 +626,16 @@ def probe(self_ip, all_ips, targets):
         kind, ip, arg = job
         if kind == "ssh":
             return job, ssh_banner(ip)
+        if kind == "rtt":
+            return job, rtt(ip)
         return job, (http_info(ip, arg) if kind == "http" else upnp_describe(ip, arg))
 
     with ThreadPoolExecutor(max_workers=16) as ex:
         for (kind, ip, _), r in ex.map(run, jobs):
             if not r:
                 continue
-            if kind == "ssh":
-                out.setdefault(ip, {})["ssh"] = r
+            if kind in ("ssh", "rtt"):
+                out.setdefault(ip, {})[kind] = r
             elif kind == "http":
                 out.setdefault(ip, {}).setdefault("http", []).append(r)
             else:
@@ -680,8 +779,9 @@ PORT_TYPES = {
 VENDOR_TYPES = [
     # router / network
     (r"avm audiovis|ubiquiti|mikrotik|routerboard|zyxel|technicolor|sagemcom|arcadyan|aruba|ruckus|"
-     r"linksys|tenda|juniper|draytek|fortinet|eero|cisco|d-link|netgear|tp-link|askey", [("router", 4)]),
-    (r"tp-link|tuya", [("iot", 2)]),
+     r"linksys|tenda|juniper|draytek|fortinet|eero|cisco|d-link|netgear|askey", [("router", 4)]),
+    (r"tp-link", [("router", 2), ("iot", 2)]),
+    (r"tuya", [("iot", 2)]),
     # printers
     (r"seiko epson|brother|kyocera|lexmark|xerox|ricoh|konica|canon|oki electric", [("printer", 6)]),
     (r"hewlett", [("printer", 3), ("computer", 2)]),
@@ -741,6 +841,14 @@ HTTP_TYPES = [
 # voice assistants / smart speakers & displays belong to home automation
 SMART_ASSISTANT = re.compile(r"google[ -]?home|google nest|nest[ -]?(mini|audio|hub)|home mini|\becho\b|alexa|"
                              r"homepod", re.I)
+# TP-Link Tapo / Kasa model codes -> (type, family)
+TAPO_MODELS = [
+    (r"H[12]\d\d", "iot", "hub domotica"), (r"(?:P|KP|HS|EP)\d{3}", "iot", "presa smart"),
+    (r"(?:L|KL)\d{3}", "iot", "lampadina smart"), (r"T\d{3}", "iot", "sensore"),
+    (r"S\d{3}", "iot", "interruttore smart"), (r"KE\d{3}", "iot", "termostato"),
+    (r"(?:C|TC)\d{3}", "camera", "telecamera"), (r"D\d{3}", "camera", "videocitofono"),
+    (r"RV\d{2,3}", "iot", "robot aspirapolvere"),
+]
 # ISP / consumer gateways, matched on names + web titles: (regex, brand, model, os)
 ISP_BOXES = [
     (r"iliadbox", "Iliad", "Iliadbox", "iliadbox OS"),
@@ -847,8 +955,9 @@ def classify(d, vendor):
             if re.search(rx, low):
                 for t, w in votes:
                     vote(t, w)
+    rname = (d.get("router") or {}).get("name")
     names = [x for x in (d.get("hostname"), mdns.get("hostname"), nb.get("name"), upnp.get("friendlyName"),
-                         gc.get("fn")) if x]
+                         gc.get("fn"), rname) if x]
     names += list((mdns.get("instances") or {}).values())
     joined = " ".join(names).lower()
     for rx, votes in NAME_TYPES:
@@ -869,6 +978,22 @@ def classify(d, vendor):
             model = model or m.group(1).strip()
     if SMART_ASSISTANT.search((model or "") + " " + joined):
         vote("iot", 30)  # declared model beats the generic cast hints
+    tapo_web = any("SHIP 2.0" in ((h.get("title") or "") + (h.get("server") or "")) for h in https)
+    if (vendor and "tp-link" in vendor.lower()) or tapo_web:
+        for n in names:
+            for rx, t, family in TAPO_MODELS:
+                m = re.fullmatch(r"(?:tapo[-_ ]?)?(%s)(?:[-_ ].*)?" % rx, n, re.I)
+                if m:
+                    brand, model = "TP-Link", model or "Tapo %s (%s)" % (m.group(1).upper(), family)
+                    vote(t, 15)
+                    break
+            else:
+                continue
+            break
+        if tapo_web:
+            vote("iot", 8)  # Tapo/Kasa embedded web server
+        elif score.get("iot", 0) < 10:
+            vote("router", 3)  # plain TP-Link: router / access point / mesh
     box = None
     blob_all = (joined + " " + " ".join("%s %s" % (h.get("title") or "", h.get("server") or "") for h in https)).lower()
     for rx, b_brand, b_model, b_os in ISP_BOXES:
@@ -896,7 +1021,7 @@ def classify(d, vendor):
                  or next((v for k, v in (mdns.get("instances") or {}).items()
                           if k in ("_device-info._tcp", "_companion-link._tcp", "_airplay._tcp", "_googlecast._tcp",
                                    "_ipp._tcp", "_hap._tcp", "_smb._tcp", "_workstation._tcp")), None)
-                 or _clean_host(d.get("hostname")) or _clean_host(mdns.get("hostname")) or nb.get("name"))
+                 or _clean_host(d.get("hostname")) or rname or _clean_host(mdns.get("hostname")) or nb.get("name"))
     if auto_name and "_workstation._tcp" in (mdns.get("instances") or {}):
         auto_name = re.sub(r"\s*\[[0-9a-f:]{17}\]$", "", auto_name)
     noun = TYPE_NOUNS[type_]

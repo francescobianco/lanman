@@ -12,6 +12,8 @@ e mostra tutti i dispositivi in un pannello web minimale sulla porta **7780**.
 - cache per MAC address: l'identificazione sopravvive ai cambi di IP e viene rifatta
   solo per dispositivi nuovi, con IP cambiato, ogni 6 ore o su richiesta
 - clic su un dispositivo: scheda di dettaglio con pulsante "Copia scheda" (testo negli appunti)
+- connessione **Wi-Fi / cavo / VPN** con icona: dalla tabella host del router (FRITZ!Box via TR-064,
+  senza password), MAC privati, tempi di risposta (se l'host di lanman è cablato), modelli solo Wi-Fi
 - sola lettura: la classificazione è automatica e non modificabile dal pannello
 - scansione automatica ogni 60s o manuale dal pulsante
 - dati salvati in `~/.lanman/devices.json`

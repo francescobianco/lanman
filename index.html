@@ -25,6 +25,7 @@ tr.dev:hover td{background:var(--soft)}
 tr.off td{color:var(--mut)}
 tr.grp td{border-bottom:0;padding:22px 6px 6px;font-weight:600;font-size:13px}
 tr.grp span{font-weight:400;color:var(--mut);margin-left:6px}
+.lk{display:inline-block;width:14px;height:14px;vertical-align:-2px;margin-left:6px;color:var(--mut)}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--off)}
 tr.on .dot{background:var(--on)}
 code{font:12px ui-monospace,monospace}
@@ -58,6 +59,12 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const label=d=>d.display_name||'';
 try{$('#onlyOn').checked=localStorage.lanmanOnly==='1'}catch(e){}
 
+const ICONS={
+  wifi:'<path d="M2 6.5a9 9 0 0 1 12 0M4.2 8.8a6 6 0 0 1 7.6 0M6.4 11.1a3 3 0 0 1 3.2 0"/><circle cx="8" cy="13" r=".9" fill="currentColor"/>',
+  wired:'<rect x="3" y="4" width="10" height="8" rx="1"/><path d="M5.5 12V9.5h5V12M6.5 7h.01M8 7h.01M9.5 7h.01"/>',
+  vpn:'<rect x="3.5" y="7" width="9" height="6.5" rx="1"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>'};
+const LINKS={wifi:'Wi-Fi',wired:'Cavo (Ethernet)',vpn:'VPN'};
+const linkIcon=d=>d.link?`<svg class="lk" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><title>${LINKS[d.link]} — ${esc(d.link_source)}</title>${ICONS[d.link]}</svg>`:'<span class="lk"></span>';
 const proto=p=>p==443||p==8443||p==5001?'https':'http';
 const fmt=t=>t?new Date(t*1000).toLocaleString():'';
 // one list of [label, text, html?] feeds both the detail view and the copied card
@@ -68,11 +75,13 @@ function card(d){
   add('Marca',d.brand);add('Modello',d.model);add('Sistema operativo',d.os);
   add('CPU',l.cpu);add('RAM',l.ram);add('Kernel',l.kernel);
   add('Stato',d.online?'online':'offline, visto '+fmt(d.last_seen));
+  add('Connessione',d.link&&`${LINKS[d.link]} (${d.link_source})`);
   add('Indirizzi IP',(d.ips||[d.ip]).join(', '));
   add('MAC',d.mac);
   add('Produttore (MAC)',d.vendor||(d.mac&&/^.[26ae]/.test(d.mac)?'MAC privato/randomizzato':''));
   add('Hostname DNS',d.hostname);
   add('Hostname mDNS',x.mdns_hostname);
+  add('Nome nel router',d.router_name);
   add('NetBIOS',x.netbios&&[x.netbios.name,x.netbios.group].filter(Boolean).join(' / '));
   add('Servizi mDNS',(x.mdns_services||[]).join('  '));
   add('UPnP',x.upnp&&[x.upnp.friendlyName,x.upnp.manufacturer,x.upnp.modelName,x.upnp.modelNumber,
@@ -126,7 +135,7 @@ function render(){
     const extra=(d.ips||[]).length>1?` <span class="mut">+${d.ips.length-1}</span>`:'';
     const rnd=d.mac&&/^.[26ae]/.test(d.mac)?'<span class="tag" title="MAC privato/randomizzato">rnd</span>':'';
     out.push(`<tr class="dev ${d.online?'on':'off'}" data-id="${esc(d.id)}">
-      <td><span class="dot" title="${d.online?(d.ping?'online':'online (no ping)'):'offline'}"></span></td>
+      <td><span class="dot" title="${d.online?(d.ping?'online':'online (no ping)'):'offline'}"></span>${linkIcon(d)}</td>
       <td>${esc(label(d))}${tags}</td>
       <td>${esc(d.brand)}</td><td>${esc(d.model)}${d.os?`<span class="${d.model?'sub':'mut'}">${esc(d.os)}</span>`:''}</td>
       <td><code>${esc(d.ip)}</code>${extra}</td>

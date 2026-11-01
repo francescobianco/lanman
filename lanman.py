@@ -30,7 +30,8 @@ REPROBE_AFTER = 6 * 3600
 
 lock = threading.Lock()
 devices = {}  # key (mac, or "ip:<addr>") -> dict
-state = {"iface": None, "network": None, "self_ip": None, "gateway": None,
+state = {"iface": None, "network": None, "self_ip": None, "gateway": None, "host_wired": False,
+         "router_api": None,
          "last_scan": None, "scanning": False, "probing": False}
 scan_now = threading.Event()
 vendors = identify.Vendors(DATA_DIR)
@@ -116,6 +117,10 @@ def scan():
     names.update({ip: socket.gethostname() for ip in mine})
     gw = state["gateway"]
     gw_mac = neigh.get(gw)
+    rhosts = None
+    if gw and (state["router_api"] is None or state["router_api"] is True or time.time() - state["router_api"] > 600):
+        rhosts = identify.router_hosts(gw)  # retry unsupported routers every 10 min
+        state["router_api"] = True if rhosts is not None else time.time()
 
     # group addresses by device key
     groups = {}
@@ -146,6 +151,12 @@ def scan():
             d["last_seen"] = now
             d["online"] = True
             d["ping"] = any(ip in alive for ip in g["ips"])
+            if rhosts is not None:
+                rh = rhosts.get(key) or (rhosts.get("ip:" + d["ip"]) if g["via_router"] else None)
+                if rh:
+                    d["router"] = rh
+                else:
+                    d.pop("router", None)
             host = next((names[ip] for ip in g["ips"] if names.get(ip) and names[ip] != "_gateway"), None)
             if host:
                 d["hostname"] = host
@@ -170,7 +181,7 @@ def probe():
         return
     state["probing"] = True
     print("probing %d device(s)" % len(need), flush=True)
-    res = identify.probe(state["self_ip"], sorted(online, key=ipn), need)
+    res = identify.probe(state["self_ip"], sorted(online, key=ipn), need, measure_rtt=state["host_wired"])
     with lock:
         for ip, r in res.items():
             d = devices.get(online.get(ip))
@@ -228,10 +239,12 @@ def save():
 
 
 def public(key, d):
-    out = {k: v for k, v in d.items() if k not in ("probe", "name", "type", "reprobe")}
+    out = {k: v for k, v in d.items() if k not in ("probe", "name", "type", "reprobe", "router")}
+    out["router_name"] = (d.get("router") or {}).get("name")
     out["id"] = key
     vendor = None if d.get("via_router") else vendors.lookup(d.get("mac"))
     out.update(identify.classify(d, vendor))
+    out["link"], out["link_source"] = identify.link_guess(d, out["type"], vendor, state["host_wired"], out.get("model"))
     if d.get("via_router"):
         out["note"] = "raggiunto tramite il router (VPN / proxy-ARP)"
     p = d.get("probe") or {}
@@ -306,7 +319,9 @@ def main():
     net = addrs[0].network
     if net.num_addresses > 1024:  # don't sweep huge subnets
         net = ipaddress.ip_network("%s/22" % addrs[0].ip, strict=False)
-    state.update(iface=iface, network=net, self_ip=str(addrs[0].ip), gateway=gateway(iface))
+    wireless = os.path.exists("/sys/class/net/%s/wireless" % iface) or os.path.exists("/sys/class/net/%s/phy80211" % iface)
+    state.update(iface=iface, network=net, self_ip=str(addrs[0].ip), gateway=gateway(iface), host_wired=not wireless)
+    LOCAL["link"] = "wifi" if wireless else "wired"
 
     load()
     vendors.load()
