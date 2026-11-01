@@ -32,8 +32,10 @@ code{font:12px ui-monospace,monospace}
 .tag{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:0 4px;margin-left:4px}
 .sub{color:var(--mut);margin-left:6px}
 .det td{background:var(--soft);white-space:normal;padding:12px 14px 16px}
-.kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin-bottom:12px}
+.kv{display:grid;grid-template-columns:max-content minmax(0,1fr) max-content minmax(0,1fr);gap:4px 16px;margin-bottom:12px}
 .kv b{font-weight:500;color:var(--mut)}
+.kv span{overflow-wrap:anywhere}
+@media (max-width:700px){.kv{grid-template-columns:max-content minmax(0,1fr)}}
 .ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 </style></head><body><main>
 <header>
