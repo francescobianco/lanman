@@ -1212,7 +1212,7 @@ def classify(d, vendor):
     brand = brand or short_brand(vendor)
     if not brand and nb.get("name") and 3389 in ports:
         brand = "Windows"
-    auto_name = (gc.get("fn") or upnp.get("friendlyName")
+    auto_name = (gc.get("fn") or upnp.get("friendlyName") or di.get("name")
                  or next((v for k, v in (mdns.get("instances") or {}).items()
                           if k in ("_device-info._tcp", "_companion-link._tcp", "_airplay._tcp", "_googlecast._tcp",
                                    "_ipp._tcp", "_hap._tcp", "_smb._tcp", "_workstation._tcp")), None)
