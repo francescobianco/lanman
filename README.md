@@ -30,6 +30,15 @@ e mostra tutti i dispositivi in un pannello web minimale sulla porta **7780**.
 Per l'avvio automatico al boot serve una volta sul server:
 `sudo loginctl enable-linger $USER`
 
+## Associazione con Iliadbox / Freebox (facoltativa)
+
+    python3 lanman.py --pair
+
+Invia al box una richiesta di accesso per l'app "lanman", da confermare sul box
+(display o app iliadbox). Il token viene salvato in `~/.lanman/freebox.json` (permessi 600)
+ed è revocabile dall'interfaccia del box. lanman lo usa solo per leggere l'elenco dei
+dispositivi (nomi DHCP, Wi-Fi/cavo, tipo di dispositivo). Il FRITZ!Box non richiede associazione.
+
 ## API
 
 - `GET  /api/devices` — elenco dispositivi

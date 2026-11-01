@@ -19,6 +19,8 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
+import freebox
+
 # ------------------------------------------------------------ device types --
 TYPES = [
     ("router", "Router e rete"),
@@ -34,7 +36,7 @@ TYPES = [
     ("unknown", "Sconosciuti"),
 ]
 TYPE_KEYS = [k for k, _ in TYPES]
-PROBE_VERSION = 4  # bump when probes change: cached devices get re-identified
+PROBE_VERSION = 5  # bump when probes change: cached devices get re-identified
 TYPE_NOUNS = {
     "router": "router", "vpn": "client VPN", "server": "server", "computer": "computer", "mobile": "smartphone/tablet",
     "media": "dispositivo multimediale", "printer": "stampante", "camera": "telecamera",
@@ -653,6 +655,8 @@ def probe(self_ip, all_ips, targets, measure_rtt=False):
         for p in [p for p in (80, 8080, 5000, 443, 8443) if p in ports.get(ip, [])][:2]:
             jobs.append(("http", ip, p))
     for ip in targets:
+        if "_fbx-api._tcp" in (mdns.get(ip) or {}).get("services", []):
+            jobs.append(("fbx", ip, None))
         if 22 in ports.get(ip, []):
             jobs.append(("ssh", ip, None))
         if measure_rtt and ip != self_ip:
@@ -669,6 +673,12 @@ def probe(self_ip, all_ips, targets, measure_rtt=False):
             return job, ssh_banner(ip)
         if kind == "rtt":
             return job, rtt(ip)
+        if kind == "fbx":
+            info = freebox.api_version(ip) or {}
+            return job, {k: v for k, v in {
+                "name": info.get("device_name"), "brand": None, "model": info.get("box_model_name"),
+                "hardware": info.get("box_model"), "firmware": info.get("api_version") and
+                "API Freebox OS %s" % info["api_version"]}.items() if v} or None
         if kind == "http":
             r = http_info(ip, arg)
             if r and (r.get("hint") or "").startswith("tplink"):
@@ -682,6 +692,8 @@ def probe(self_ip, all_ips, targets, measure_rtt=False):
                 continue
             if kind in ("ssh", "rtt"):
                 out.setdefault(ip, {})[kind] = r
+            elif kind == "fbx":
+                out.setdefault(ip, {})["device_info"] = r
             elif kind == "http":
                 di = r.pop("device_info", None)
                 if di:
@@ -1018,7 +1030,13 @@ def classify(d, vendor):
             if re.search(rx, low):
                 for t, w in votes:
                     vote(t, w)
-    rname = (d.get("router") or {}).get("name")
+    router = d.get("router") or {}
+    rname = router.get("name")
+    rtype = freebox.HOST_TYPES.get(router.get("host_type"))
+    if rtype:
+        vote(rtype, 10)  # type known to the router (Freebox host_type)
+    if not vendor and router.get("vendor"):
+        vendor = router["vendor"]
     names = [x for x in (d.get("hostname"), mdns.get("hostname"), nb.get("name"), upnp.get("friendlyName"),
                          gc.get("fn"), rname) if x]
     names += list((mdns.get("instances") or {}).values())

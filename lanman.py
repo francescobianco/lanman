@@ -21,6 +21,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import freebox
 import identify
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +36,7 @@ state = {"iface": None, "network": None, "self_ip": None, "gateway": None, "host
          "last_scan": None, "scanning": False, "probing": False}
 scan_now = threading.Event()
 vendors = identify.Vendors(DATA_DIR)
+fbx = freebox.Client(os.path.join(DATA_DIR, "freebox.json"))
 LOCAL = identify.local_info()
 
 
@@ -119,7 +121,9 @@ def scan():
     gw_mac = neigh.get(gw)
     rhosts = None
     if gw and (state["router_api"] is None or state["router_api"] is True or time.time() - state["router_api"] > 600):
-        rhosts = identify.router_hosts(gw)  # retry unsupported routers every 10 min
+        rhosts = fbx.hosts(gw)  # paired Iliadbox / Freebox
+        if rhosts is None:
+            rhosts = identify.router_hosts(gw)  # FRITZ!Box; retry unsupported routers every 10 min
         state["router_api"] = True if rhosts is not None else time.time()
 
     # group addresses by device key
@@ -308,6 +312,8 @@ def main():
     ap.add_argument("--port", type=int, default=int(os.environ.get("LANMAN_PORT", 7780)))
     ap.add_argument("--bind", default=os.environ.get("LANMAN_BIND", "0.0.0.0"))
     ap.add_argument("--iface", default=os.environ.get("LANMAN_IFACE"))
+    ap.add_argument("--pair", action="store_true",
+                    help="associa lanman al router (Iliadbox/Freebox): richiede conferma sul box")
     ap.add_argument("--interval", type=int, default=int(os.environ.get("LANMAN_INTERVAL", 60)))
     a = ap.parse_args()
 
@@ -324,6 +330,8 @@ def main():
     state.update(iface=iface, network=net, self_ip=str(addrs[0].ip), gateway=gateway(iface), host_wired=not wireless)
     LOCAL["link"] = "wifi" if wireless else "wired"
 
+    if a.pair:
+        raise SystemExit(0 if freebox.pair(state["gateway"], fbx.path) else 1)
     load()
     vendors.load()
     threading.Thread(target=scanner, args=(a.interval,), daemon=True).start()
