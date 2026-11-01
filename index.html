@@ -34,7 +34,6 @@ code{font:12px ui-monospace,monospace}
 .kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin-bottom:12px}
 .kv b{font-weight:500;color:var(--mut)}
 .ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.ctl input{min-width:200px}
 </style></head><body><main>
 <header>
   <h1>lanman</h1><span class="mut" id="net"></span><span class="sp"></span>
@@ -56,41 +55,54 @@ const ago=t=>{if(!t)return'';const s=Date.now()/1000-t;
   if(s<90)return'ora';if(s<3600)return Math.round(s/60)+' min fa';
   if(s<86400)return Math.round(s/3600)+' h fa';return Math.round(s/86400)+' g fa'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const label=d=>d.name||d.display_name||'';
+const label=d=>d.display_name||'';
 try{$('#onlyOn').checked=localStorage.lanmanOnly==='1'}catch(e){}
 
+const proto=p=>p==443||p==8443||p==5001?'https':'http';
+const fmt=t=>t?new Date(t*1000).toLocaleString():'';
+// one list of [label, text, html?] feeds both the detail view and the copied card
+function card(d){
+  const x=d.details||{},l=d.local||{},rows=[];
+  const add=(k,v,h)=>{if(v)rows.push([k,v,h])};
+  add('Tipo',(Object.fromEntries(data.types)[d.type]||d.type)+(d.type_guess?' (dedotto)':''));
+  add('Marca',d.brand);add('Modello',d.model);add('Sistema operativo',d.os);
+  add('CPU',l.cpu);add('RAM',l.ram);add('Kernel',l.kernel);
+  add('Stato',d.online?'online':'offline, visto '+fmt(d.last_seen));
+  add('Indirizzi IP',(d.ips||[d.ip]).join(', '));
+  add('MAC',d.mac);
+  add('Produttore (MAC)',d.vendor||(d.mac&&/^.[26ae]/.test(d.mac)?'MAC privato/randomizzato':''));
+  add('Hostname DNS',d.hostname);
+  add('Hostname mDNS',x.mdns_hostname);
+  add('NetBIOS',x.netbios&&[x.netbios.name,x.netbios.group].filter(Boolean).join(' / '));
+  add('Servizi mDNS',(x.mdns_services||[]).join('  '));
+  add('UPnP',x.upnp&&[x.upnp.friendlyName,x.upnp.manufacturer,x.upnp.modelName,x.upnp.modelNumber,
+      (x.upnp.device_types||[]).join(', ')].filter(Boolean).join(' · '));
+  add('Server SSDP',x.ssdp_server);
+  add('Stampante condivisa',d.shared_printer);
+  add('Porte aperte',(x.ports||[]).join(', '));
+  add('SSH',x.ssh);
+  const web=x.http||[];
+  add('Web',web.map(h=>`${proto(h.port)}://${d.ip}:${h.port}/ ${[h.title,h.server].filter(Boolean).join(' — ')}`).join('\n'),
+      web.map(h=>`<a href="${proto(h.port)}://${esc(d.ip)}:${h.port}/" target="_blank">:${h.port}</a> ${esc([h.title,h.server].filter(Boolean).join(' — '))}`).join('<br>'));
+  add('Note',d.note);
+  add('Visto la prima volta',fmt(d.first_seen));
+  add('Identificato',d.probed_at?fmt(d.probed_at):'non ancora');
+  return rows;
+}
+function cardText(d){
+  return [label(d),''.padEnd(label(d).length,'=')].concat(
+    card(d).map(([k,v])=>k+': '+String(v).replace(/\n/g,'\n'+' '.repeat(k.length+2)))).join('\n');
+}
 function detail(d){
-  const x=d.details||{},rows=[];
-  const add=(k,v)=>{if(v&&(!Array.isArray(v)||v.length))rows.push(`<b>${k}</b><span>${v}</span>`)};
-  const l=d.local||{};
-  add('Sistema operativo',esc(d.os));
-  add('CPU',esc(l.cpu));add('RAM',esc(l.ram));add('Kernel',esc(l.kernel));
-  add('Produttore (MAC)',esc(d.vendor||(d.mac&&/^.[26ae]/.test(d.mac)?'MAC privato/randomizzato':'')));
-  add('Indirizzi',esc((d.ips||[d.ip]).join(', ')));
-  add('Hostname DNS',esc(d.hostname));
-  add('Hostname mDNS',esc(x.mdns_hostname));
-  add('NetBIOS',x.netbios&&esc([x.netbios.name,x.netbios.group].filter(Boolean).join(' / ')));
-  add('Servizi mDNS',esc((x.mdns_services||[]).join('  ')));
-  add('UPnP',x.upnp&&esc([x.upnp.friendlyName,x.upnp.manufacturer,x.upnp.modelName,x.upnp.modelNumber,
-      (x.upnp.device_types||[]).join(', ')].filter(Boolean).join(' · ')));
-  add('Server SSDP',esc(x.ssdp_server));
-  add('Stampante condivisa',esc(d.shared_printer));
-  add('Porte aperte',esc((x.ports||[]).join(', ')));
-  add('SSH',esc(x.ssh));
-  add('Web',(x.http||[]).map(h=>`<a href="${h.port==443||h.port==8443||h.port==5001?'https':'http'}://${esc(d.ip)}:${h.port}/" target="_blank">:${h.port}</a> ${esc([h.title,h.server].filter(Boolean).join(' — '))}`).join('<br>'));
-  add('Note',esc(d.note));
-  add('Visto la prima volta',new Date(d.first_seen*1000).toLocaleString());
-  add('Identificato',d.probed_at?new Date(d.probed_at*1000).toLocaleString():'non ancora');
-  const opts=['<option value="">automatico</option>'].concat(data.types.map(([k,l])=>
-    `<option value="${k}" ${d.type_override===k?'selected':''}>${esc(l)}</option>`)).join('');
+  const rows=card(d).slice(4).map(([k,v,h])=>`<b>${esc(k)}</b><span>${h||esc(v)}</span>`);
   return `<tr class="det"><td colspan="7"><div class="kv">${rows.join('')}</div>
-    <div class="ctl" data-id="${esc(d.id)}">
-      <input id="nm" value="${esc(d.name)}" placeholder="${esc(d.display_name)}">
-      <select id="ty">${opts}</select>
-      <button data-act="save">Salva</button>
-      <button data-act="reprobe">Identifica di nuovo</button>
-      ${d.online?'':'<button data-act="forget">Dimentica</button>'}
-    </div></td></tr>`;
+    <div class="ctl"><button data-copy="${esc(d.id)}">Copia scheda</button></div></td></tr>`;
+}
+async function copy(text){
+  try{await navigator.clipboard.writeText(text);return true}catch(e){}
+  const t=document.createElement('textarea');t.value=text;t.style.position='fixed';t.style.opacity='0';
+  document.body.appendChild(t);t.select();let ok=false;try{ok=document.execCommand('copy')}catch(e){}
+  t.remove();return ok;
 }
 
 function render(){
@@ -111,12 +123,11 @@ function render(){
       out.push(`<tr class="grp"><td colspan="7">${esc(names[cur]||cur)}<span>${n.filter(x=>x.online).length}/${n.length}</span></td></tr>`)}
     const tags=(d.is_self?'<span class="tag">questo host</span>':'')+(d.is_gateway?'<span class="tag">gateway</span>':'')
       +(d.type_guess&&d.type!=='unknown'?'<span class="tag" title="tipologia dedotta con pochi indizi">?</span>':'');
-    const sub=d.name&&d.display_name&&d.name!==d.display_name?`<span class="sub">${esc(d.display_name)}</span>`:'';
     const extra=(d.ips||[]).length>1?` <span class="mut">+${d.ips.length-1}</span>`:'';
     const rnd=d.mac&&/^.[26ae]/.test(d.mac)?'<span class="tag" title="MAC privato/randomizzato">rnd</span>':'';
     out.push(`<tr class="dev ${d.online?'on':'off'}" data-id="${esc(d.id)}">
       <td><span class="dot" title="${d.online?(d.ping?'online':'online (no ping)'):'offline'}"></span></td>
-      <td>${esc(label(d))}${sub}${tags}</td>
+      <td>${esc(label(d))}${tags}</td>
       <td>${esc(d.brand)}</td><td>${esc(d.model)}${d.os?`<span class="sub">${esc(d.os)}</span>`:''}</td>
       <td><code>${esc(d.ip)}</code>${extra}</td>
       <td><code>${esc(d.mac)}</code>${rnd}</td>
@@ -138,15 +149,12 @@ $('#onlyOn').onchange=()=>{try{localStorage.lanmanOnly=$('#onlyOn').checked?'1':
 document.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{
   sortD=sortK===th.dataset.k?-sortD:1;sortK=th.dataset.k;render()});
 $('#tb').onclick=async e=>{
-  const b=e.target.closest('button[data-act]');
-  if(b){const id=b.parentNode.dataset.id,u='/api/devices/'+encodeURIComponent(id);
-    if(b.dataset.act==='save')await post(u,{name:$('#nm').value,type:$('#ty').value});
-    if(b.dataset.act==='reprobe'){await post(u,{reprobe:true});b.textContent='in coda…'}
-    if(b.dataset.act==='forget'){await post(u,{forget:true});open=null}
-    return load()}
+  const c=e.target.closest('button[data-copy]');
+  if(c){const d=data.devices.find(x=>x.id===c.dataset.copy);
+    c.textContent=await copy(cardText(d))?'Copiata ✓':'Copia non riuscita';
+    setTimeout(()=>c.textContent='Copia scheda',1500);return}
   const tr=e.target.closest('tr.dev');
   if(tr){open=open===tr.dataset.id?null:tr.dataset.id;render()}
 };
-$('#tb').onkeydown=e=>{if(e.key==='Enter'&&e.target.id==='nm')$('button[data-act=save]').click()};
 load();setInterval(()=>{const a=document.activeElement;if(!a||!a.closest||!a.closest('.ctl'))load()},5000);
 </script></body></html>

@@ -18,7 +18,6 @@ import socket
 import subprocess
 import threading
 import time
-import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -134,11 +133,7 @@ def scan():
                     old = devices.pop("ip:" + ip, None)
                     if old and key not in devices:
                         devices[key] = old
-                    elif old:
-                        devices[key]["name"] = devices[key].get("name") or old.get("name", "")
-                        if old.get("type"):
-                            devices[key].setdefault("type", old["type"])
-            d = devices.setdefault(key, {"first_seen": now, "name": ""})
+            d = devices.setdefault(key, {"first_seen": now})
             prev = d.get("ip")
             d["ip"] = prev if prev in g["ips"] else g["ips"][0]
             d["ips"] = g["ips"]
@@ -169,7 +164,7 @@ def probe():
     with lock:
         online = {d["ip"]: k for k, d in devices.items() if d.get("online")}
         need = [d["ip"] for d in devices.values() if d.get("online") and (
-            d.get("reprobe") or not d.get("probed_at") or d.get("probed_ip") != d["ip"]
+            not d.get("probed_at") or d.get("probed_ip") != d["ip"]
             or now - d["probed_at"] > REPROBE_AFTER or d.get("probe_version") != identify.PROBE_VERSION)]
     if not need:
         return
@@ -187,7 +182,6 @@ def probe():
                 d["probed_at"] = int(now)
                 d["probed_ip"] = ip
                 d["probe_version"] = identify.PROBE_VERSION
-                d.pop("reprobe", None)
             else:  # passive multicast answers from devices not being probed
                 p.update({k: v for k, v in r.items() if v and k in ("mdns", "ssdp_server")})
         save()
@@ -221,7 +215,6 @@ def load():
             if key in devices:  # merge duplicates of the same MAC
                 o = devices[key]
                 o["first_seen"] = min(o.get("first_seen", 0), d.get("first_seen", 0))
-                o["name"] = o.get("name") or d.get("name", "")
                 continue
         devices[key] = d
 
@@ -235,13 +228,10 @@ def save():
 
 
 def public(key, d):
-    out = {k: v for k, v in d.items() if k != "probe"}
+    out = {k: v for k, v in d.items() if k not in ("probe", "name", "type", "reprobe")}
     out["id"] = key
     vendor = None if d.get("via_router") else vendors.lookup(d.get("mac"))
     out.update(identify.classify(d, vendor))
-    out["type_override"] = d.get("type")
-    if d.get("type"):  # user override
-        out["type"], out["type_guess"] = d["type"], False
     if d.get("via_router"):
         out["note"] = "raggiunto tramite il router (VPN / proxy-ARP)"
     p = d.get("probe") or {}
@@ -296,35 +286,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/scan":
             scan_now.set()
             return self.send(202, '{"ok":true}')
-        m = re.fullmatch(r"/api/devices/([^/]+)", self.path)
-        if not m:
-            return self.send(404, '{"error":"not found"}')
-        key = urllib.parse.unquote(m.group(1))
-        length = int(self.headers.get("Content-Length") or 0)
-        try:
-            body = json.loads(self.rfile.read(length) or b"{}")
-        except ValueError:
-            return self.send(400, '{"error":"bad json"}')
-        with lock:
-            d = devices.get(key)
-            if not d:
-                return self.send(404, '{"error":"unknown device"}')
-            if body.get("forget"):
-                del devices[key]
-            if "name" in body:
-                d["name"] = str(body["name"]).strip()[:64]
-            if "type" in body:
-                t = body["type"]
-                if t in identify.TYPE_KEYS:
-                    d["type"] = t
-                else:
-                    d.pop("type", None)
-            if body.get("reprobe"):
-                d["reprobe"] = True
-            save()
-        if body.get("reprobe"):
-            scan_now.set()
-        return self.send(200, '{"ok":true}')
+        self.send(404, '{"error":"not found"}')
 
 
 def main():

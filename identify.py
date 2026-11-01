@@ -845,7 +845,7 @@ def classify(d, vendor):
                 for t, w in votes:
                     vote(t, w)
     names = [x for x in (d.get("hostname"), mdns.get("hostname"), nb.get("name"), upnp.get("friendlyName"),
-                         gc.get("fn"), d.get("name")) if x]
+                         gc.get("fn")) if x]
     names += list((mdns.get("instances") or {}).values())
     joined = " ".join(names).lower()
     for rx, votes in NAME_TYPES:
