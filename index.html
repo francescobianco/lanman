@@ -62,6 +62,8 @@ const ago=t=>{if(!t)return'';const s=Date.now()/1000-t;
   if(s<86400)return Math.round(s/3600)+' h fa';return Math.round(s/86400)+' g fa'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const label=d=>d.display_name||'';
+const short=t=>{if(!t)return'';const s=Date.now()/1000-t;
+  return s<3600?Math.max(1,Math.round(s/60))+' min':s<86400?Math.round(s/3600)+' h':Math.round(s/86400)+' g'};
 // online = seen in this round; idle = silent now but seen in the last minutes (sleeping phones)
 const st=d=>!d.online?'off':d.present===false?'idle':'on';
 const STATE={on:'online',idle:'in standby',off:'offline'};
@@ -153,7 +155,7 @@ function render(){
       <td>${esc(d.brand)}</td><td>${esc(d.model)}${d.os?`<span class="${d.model?'sub':'mut'}">${esc(d.os)}</span>`:''}</td>
       <td><code>${esc(d.ip)}</code>${extra}</td>
       <td><code>${esc(d.mac)}</code>${rnd}</td>
-      <td>${st(d)==='on'?'online':st(d)==='idle'?'standby, '+ago(d.last_seen):ago(d.last_seen)}</td></tr>`);
+      <td title="visto ${esc(ago(d.last_seen))} (${esc(fmt(d.last_seen))})">${st(d)==='on'?'online':st(d)==='idle'?'standby':short(d.last_seen)}</td></tr>`);
     if(open===d.id)out.push(detail(d));
   }
   $('#tb').innerHTML=out.join('');
