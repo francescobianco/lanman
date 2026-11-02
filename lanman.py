@@ -83,20 +83,25 @@ def ping(ip, patient=False):
 
 
 FRESH_NEIGH = {"REACHABLE", "DELAY", "PROBE", "PERMANENT"}
+CONFIRMED_NEIGH = {"REACHABLE", "PERMANENT"}  # the device itself answered ARP in the last ~30 s
 
 
 def neighbours(iface):
     """-> (ip -> mac for every neighbour with a link-layer address,
-           set of ips whose entry was confirmed recently).
-    STALE entries linger long after a device has left: good for MAC lookup only."""
-    macs, fresh = {}, set()
+           set of ips whose entry was confirmed recently,
+           set of ips whose entry is confirmed right now).
+    STALE entries linger long after a device has left: good for MAC lookup only.
+    DELAY/PROBE only mean we are talking to the address, not that it answers."""
+    macs, fresh, confirmed = {}, set(), set()
     for line in sh("ip", "-4", "neigh", "show", "dev", iface).splitlines():
         parts = line.split()
         if "lladdr" in parts and "FAILED" not in parts and "INCOMPLETE" not in parts:
             macs[parts[0]] = parts[parts.index("lladdr") + 1].lower()
             if FRESH_NEIGH & set(parts):
                 fresh.add(parts[0])
-    return macs, fresh
+            if CONFIRMED_NEIGH & set(parts):
+                confirmed.add(parts[0])
+    return macs, fresh, confirmed
 
 
 def resolve(ip):
@@ -111,8 +116,31 @@ def ipn(ip):
 
 
 # ------------------------------------------------------------------- scan ---
-ONLINE_GRACE = 300  # a device stays online this long after any layer last saw it
-LAYERS = ("ping", "arp", "dhcp", "router", "mdns", "ssdp")
+ONLINE_GRACE = 300  # a device that may sleep stays online this long after any layer last saw it
+LAYERS = ("ping", "tcp", "arp", "dhcp", "router", "mdns", "ssdp")
+DIRECT = ("ping", "tcp", "arp_ok")  # the device itself answered this round (not a cache or the router)
+
+# Presence profiles. "always on" devices are online only while they answer directly and go offline
+# at the first silent round (already re-checked by the patient ping); the router's host table lags
+# minutes behind and can't keep them online. The others may sleep: any layer counts, plus a grace.
+ALWAYS_ON_KINDS = {"router", "server", "printer", "camera"}
+SLEEPY_KINDS = {"mobile", "vpn"}
+REPLY_ALPHA = 0.05  # moving average of direct answers over ~20 rounds
+ALWAYS_ON_RATE, ALWAYS_ON_MIN_ROUNDS = 0.9, 30  # learned: answers (almost) every round
+
+
+def always_on(d):
+    if d.get("is_self") or d.get("is_gateway"):
+        return True
+    if d.get("via_router") or d.get("alias_of"):
+        return False
+    vendor = vendors.lookup(d.get("mac"))
+    kind = identify.classify(d, vendor)["kind"]
+    if kind in SLEEPY_KINDS:
+        return False
+    if kind in ALWAYS_ON_KINDS:
+        return True
+    return d.get("reply_n", 0) >= ALWAYS_ON_MIN_ROUNDS and d.get("reply_rate", 0) >= ALWAYS_ON_RATE
 passive = {}  # ip -> {"mdns": ts, "ssdp": ts}, filled by probe()
 
 
@@ -131,7 +159,14 @@ def scan():
     if sleepy:
         with ThreadPoolExecutor(max_workers=32) as ex:
             alive |= {ip for ip, ok in zip(sleepy, ex.map(lambda ip: ping(ip, True), sleepy)) if ok}
-    neigh, fresh = neighbours(iface)
+    # known open TCP ports: proof of life for devices that drop pings
+    with lock:
+        knock = [(ip, p) for d in devices.values() if now - d.get("last_seen", 0) < 86400
+                 for ip in (d.get("ips") or [d.get("ip")]) if ip and ip not in alive
+                 for p in ((d.get("probe") or {}).get("ports") or [])[:2]]
+    with ThreadPoolExecutor(max_workers=32) as ex:
+        tcp = {ip for (ip, _), ok in zip(knock, ex.map(lambda a: identify._port_open(*a), knock)) if ok}
+    neigh, fresh, confirmed = neighbours(iface)
     mymac = own_mac(iface)
     mine = [str(i.ip) for i in own_ips(iface) if i.ip in net]
     gw = state["gateway"]
@@ -157,6 +192,10 @@ def scan():
 
     for ip in alive:
         saw(ip, "ping")
+    for ip in tcp:
+        saw(ip, "tcp")
+    for ip in confirmed:
+        saw(ip, "arp_ok")
     for ip, mac in neigh.items():
         if ip in fresh:
             saw(ip, "arp", mac)
@@ -218,10 +257,14 @@ def scan():
             d["is_self"] = bool(set(mine) & set(g["ips"]))
             if d["is_self"]:
                 d.setdefault("probe", {})["local"] = LOCAL
-            d["last_seen"] = now
+            direct = bool(g["layers"] & set(DIRECT))
+            if direct:
+                d["last_direct"] = now
+            if direct or not d.get("always_on"):
+                d["last_seen"] = now  # an always-on device is "seen" only when it answers itself
             d["ping"] = any(ip in alive for ip in g["ips"])
             sb = d.setdefault("seen_by", {})
-            for layer in g["layers"]:
+            for layer in g["layers"] - {"arp_ok"}:
                 sb[layer] = now
             if key in dhcp_seen:
                 d["dhcp"] = dhcp_seen[key]
@@ -245,7 +288,19 @@ def scan():
             d["present"] = key in groups  # seen in this round
             if not d["present"]:
                 d["ping"] = False
-            d["online"] = now - d.get("last_seen", 0) < ONLINE_GRACE  # present, or in standby
+            direct = d.get("last_direct") == now
+            if d.get("online") or direct:  # learn how reliably it answers while it is around
+                n = d.get("reply_n", 0)
+                d["reply_rate"] = round(float(direct) if not n else
+                                        d["reply_rate"] * (1 - REPLY_ALPHA) + REPLY_ALPHA * direct, 3)
+                d["reply_n"] = n + 1
+            d["always_on"] = always_on(d)
+            if d.get("is_self"):
+                d["online"] = True
+            elif d["always_on"]:
+                d["online"] = direct  # silent now -> offline now
+            else:
+                d["online"] = now - d.get("last_seen", 0) < ONLINE_GRACE  # present, or in standby
         state["last_scan"] = now
         save()
     state["scanning"] = False
@@ -363,7 +418,9 @@ def events():
             if d.get("alias_of"):
                 continue  # same phone under another private MAC: its primary record speaks for it
             prev = d.get("notified")
-            if d.get("present"):
+            if d.get("always_on"):
+                cur = "online" if d.get("online") else "offline"  # no waiting: off means off
+            elif d.get("present"):
                 cur = "online"
             elif now - d.get("last_seen", 0) > NOTIFY_OFFLINE_AFTER:
                 cur = "offline"

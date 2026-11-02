@@ -69,6 +69,7 @@ const short=t=>{if(!t)return'';const s=Date.now()/1000-t;
   return s<3600?Math.max(1,Math.round(s/60))+' min':s<86400?Math.round(s/3600)+' h':Math.round(s/86400)+' g'};
 // online = seen in this round; idle = silent now but seen in the last minutes (sleeping phones)
 const st=d=>!d.online?'off':d.present===false?'idle':'on';
+const PRESENCE=d=>d.always_on?'sempre acceso: offline appena smette di rispondere':'può andare in standby: offline dopo 5 minuti di silenzio';
 const STATE={on:'online',idle:'in standby',off:'offline'};
 try{$('#onlyOn').checked=localStorage.lanmanOnly==='1'}catch(e){}
 
@@ -90,8 +91,9 @@ function card(d){
   add('Nome dispositivo',di.name);add('Hardware',di.hardware);add('Firmware',di.firmware);
   add('CPU',l.cpu);add('RAM',l.ram);add('Kernel',l.kernel);
   add('Stato',st(d)==='on'?'online':STATE[st(d)]+', visto '+ago(d.last_seen)+' ('+fmt(d.last_seen)+')');
+  add('Presenza',PRESENCE(d));
   add('Connessione',d.link&&`${LINKS[d.link]} (${d.link_source})`);
-  const LAY={ping:'ping',arp:'ARP',dhcp:'DHCP',router:'router',mdns:'mDNS',ssdp:'SSDP'};
+  const LAY={ping:'ping',tcp:'porte note',arp:'ARP',dhcp:'DHCP',router:'router',mdns:'mDNS',ssdp:'SSDP'};
   add('Rilevato da',Object.entries(d.seen_by||{}).sort((a,b)=>b[1]-a[1]).map(([k,t])=>`${LAY[k]||k} (${ago(t)})`).join(', '));
   add('Indirizzi IP',(d.ips||[d.ip]).join(', '));
   add('MAC',d.mac);

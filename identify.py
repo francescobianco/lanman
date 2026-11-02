@@ -1285,6 +1285,7 @@ def classify(d, vendor):
     if auto_name and "_workstation._tcp" in (mdns.get("instances") or {}):
         auto_name = re.sub(r"\s*\[[0-9a-f:]{17}\]$", "", auto_name)
     noun = TYPE_NOUNS[type_]
+    kind = type_  # finer than the panel group: presence rules tell cameras apart from other IoT
     if type_ == "camera":  # cameras keep their noun but are listed under home automation
         type_ = "iot"
     if brand and model:
@@ -1309,6 +1310,7 @@ def classify(d, vendor):
         "local": local or None,
         "type": type_,
         "type_guess": best < 4,
+        "kind": kind,
         "brand": brand,
         "model": model,
         "auto_name": auto_name,
