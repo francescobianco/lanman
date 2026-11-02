@@ -122,9 +122,12 @@ def refresh_network():
     addrs = own_ips(iface) if iface else []
     if not addrs:
         return False
-    net = addrs[0].network
+    # several addresses on the link: the one the host really uses is the default route's source
+    src = re.search(r"\bsrc (\S+)", sh("ip", "-4", "route", "show", "default", "dev", iface))
+    addr = next((a for a in addrs if src and str(a.ip) == src.group(1)), addrs[0])
+    net = addr.network
     if net.num_addresses > 1024:  # don't sweep huge subnets
-        net = ipaddress.ip_network("%s/22" % addrs[0].ip, strict=False)
+        net = ipaddress.ip_network("%s/22" % addr.ip, strict=False)
     gw = gateway(iface)
     if (iface, net, gw) != (state["iface"], state["network"], state["gateway"]):
         if state["network"]:
@@ -132,7 +135,7 @@ def refresh_network():
         passive.clear()  # keyed by IP: meaningless on another network
         state["router_api"] = None
     wireless = os.path.exists("/sys/class/net/%s/wireless" % iface) or os.path.exists("/sys/class/net/%s/phy80211" % iface)
-    state.update(iface=iface, network=net, self_ip=str(addrs[0].ip), gateway=gw, host_wired=not wireless)
+    state.update(iface=iface, network=net, self_ip=str(addr.ip), gateway=gw, host_wired=not wireless)
     LOCAL["link"] = "wifi" if wireless else "wired"
     return True
 
@@ -288,6 +291,7 @@ def scan():
             d["is_gateway"] = gw in g["ips"]
             d["is_self"] = bool(set(mine) & set(g["ips"]))
             if d["is_self"]:
+                d["ip"] = state["self_ip"]
                 d.setdefault("probe", {})["local"] = LOCAL
             direct = bool(g["layers"] & set(DIRECT))
             if direct:
@@ -313,7 +317,11 @@ def scan():
                 d.pop("hostname", None)
             elif now - d.get("dns_shared", 0) > 86400:
                 host = next((names[ip] for ip in g["ips"] if names.get(ip) and names[ip] != "_gateway"), None)
-                if host:
+                if host and d.get("hostname") and d["hostname"].lower() != host.lower() and prev == d["ip"]:
+                    # same address, another name: the gateway's reverse DNS is rotating names
+                    d["dns_shared"] = now
+                    d.pop("hostname", None)
+                elif host:
                     d["hostname"] = host
         link_aliases()
         for key, d in devices.items():
@@ -549,7 +557,7 @@ def public(key, d):
     out.update(identify.classify(d, vendor))
     out["link"], out["link_source"] = identify.link_guess(d, out["type"], vendor, state["host_wired"], out.get("model"))
     if d.get("dns_shared") and time.time() - d["dns_shared"] < 86400 and not d.get("is_gateway"):
-        out["note"] = ("il DNS del router dà a questo IP un nome condiviso con altri dispositivi: "
+        out["note"] = ("il DNS del router dà a questo IP nomi che cambiano o condivisi con altri dispositivi: "
                        "probabilmente è collegato tramite un range extender (nomi DNS ignorati)")
     if d.get("via_router"):
         out["note"] = "il router risponde per suo conto (proxy-ARP): MAC e produttore sono quelli del router"

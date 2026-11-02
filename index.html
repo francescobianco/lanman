@@ -42,6 +42,7 @@ code{font:12px ui-monospace,monospace}
 .kv b{font-weight:500;color:var(--mut)}
 .kv span{overflow-wrap:anywhere}
 @media (max-width:700px){.kv{grid-template-columns:max-content minmax(0,1fr)}}
+.cp{font-size:11px;padding:0 5px;margin-left:2px;color:var(--mut);vertical-align:1px}
 .ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 </style></head><body><main>
 <header>
@@ -95,7 +96,8 @@ function card(d){
   add('Connessione',d.link&&`${LINKS[d.link]} (${d.link_source})`);
   const LAY={ping:'ping',tcp:'porte note',arp:'ARP',dhcp:'DHCP',router:'router',mdns:'mDNS',ssdp:'SSDP'};
   add('Rilevato da',Object.entries(d.seen_by||{}).sort((a,b)=>b[1]-a[1]).map(([k,t])=>`${LAY[k]||k} (${ago(t)})`).join(', '));
-  add('Indirizzi IP',(d.ips||[d.ip]).join(', '));
+  const ips=d.ips||[d.ip];
+  add('Indirizzi IP',ips.join(', '),ips.map(ip=>`${esc(ip)} <button class="cp" data-cp="${esc(ip)}" title="Copia ${esc(ip)}">copia</button>`).join(' &nbsp; '));
   add('MAC',d.mac);
   add('Altri MAC usati',(d.aliases||[]).map(a=>`${a.mac} (${a.ip}, ${ago(a.last_seen)})`).join(', '));
   add('Produttore (MAC)',d.vendor||(d.mac&&/^.[26ae]/.test(d.mac)?'MAC privato/randomizzato':''));
@@ -186,6 +188,9 @@ $('#onlyOn').onchange=()=>{try{localStorage.lanmanOnly=$('#onlyOn').checked?'1':
 document.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{
   sortD=sortK===th.dataset.k?-sortD:1;sortK=th.dataset.k;render()});
 $('#tb').onclick=async e=>{
+  const b=e.target.closest('button[data-cp]');
+  if(b){b.textContent=await copy(b.dataset.cp)?'copiato':'errore';
+    setTimeout(()=>b.textContent='copia',1500);return}
   const c=e.target.closest('button[data-copy]');
   if(c){const d=data.devices.find(x=>x.id===c.dataset.copy);
     c.textContent=await copy(cardText(d))?'Copiata ✓':'Copia non riuscita';
