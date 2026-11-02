@@ -32,7 +32,7 @@ REPROBE_AFTER = 6 * 3600
 
 lock = threading.Lock()
 devices = {}  # key (mac, or "ip:<addr>") -> dict
-state = {"iface": None, "network": None, "self_ip": None, "gateway": None, "host_wired": False,
+state = {"iface": None, "iface_forced": None, "network": None, "self_ip": None, "gateway": None, "host_wired": False,
          "router_api": None,
          "last_scan": None, "scanning": False, "probing": False}
 scan_now = threading.Event()
@@ -115,6 +115,36 @@ def ipn(ip):
     return int(ipaddress.ip_address(ip))
 
 
+def refresh_network():
+    """Follow the host onto whatever network it is connected to now (a laptop changes
+    Wi-Fi). -> False when there is no usable network: keep the last one and skip the round."""
+    iface = state["iface_forced"] or detect_iface()
+    addrs = own_ips(iface) if iface else []
+    if not addrs:
+        return False
+    net = addrs[0].network
+    if net.num_addresses > 1024:  # don't sweep huge subnets
+        net = ipaddress.ip_network("%s/22" % addrs[0].ip, strict=False)
+    gw = gateway(iface)
+    if (iface, net, gw) != (state["iface"], state["network"], state["gateway"]):
+        if state["network"]:
+            print("network changed: %s -> %s on %s (gw %s)" % (state["network"], net, iface, gw), flush=True)
+        passive.clear()  # keyed by IP: meaningless on another network
+        state["router_api"] = None
+    wireless = os.path.exists("/sys/class/net/%s/wireless" % iface) or os.path.exists("/sys/class/net/%s/phy80211" % iface)
+    state.update(iface=iface, network=net, self_ip=str(addrs[0].ip), gateway=gw, host_wired=not wireless)
+    LOCAL["link"] = "wifi" if wireless else "wired"
+    return True
+
+
+def on_current_net(d):
+    """Records from another network are kept (the host may come back) but aren't "offline"."""
+    try:
+        return ipaddress.ip_address(d.get("ip")) in state["network"]
+    except (TypeError, ValueError):
+        return False
+
+
 # ------------------------------------------------------------------- scan ---
 ONLINE_GRACE = 300  # a device that may sleep stays online this long after any layer last saw it
 LAYERS = ("ping", "tcp", "arp", "dhcp", "router", "mdns", "ssdp")
@@ -132,8 +162,8 @@ ALWAYS_ON_RATE, ALWAYS_ON_MIN_ROUNDS = 0.9, 30  # learned: answers (almost) ever
 def always_on(d):
     if d.get("is_self") or d.get("is_gateway"):
         return True
-    if d.get("via_router") or d.get("alias_of"):
-        return False
+    if d.get("via_router") or d.get("alias_of") or d.get("firewalled"):
+        return False  # firewalled: can't answer directly from here, only ARP shows it is around
     vendor = vendors.lookup(d.get("mac"))
     kind = identify.classify(d, vendor)["kind"]
     if kind in SLEEPY_KINDS:
@@ -146,6 +176,8 @@ passive = {}  # ip -> {"mdns": ts, "ssdp": ts}, filled by probe()
 
 def scan():
     """Overlay several discovery layers by IP, then fold IPs into devices by MAC."""
+    if not refresh_network():
+        return
     iface, net = state["iface"], state["network"]
     state["scanning"] = True
     now = int(time.time())
@@ -154,14 +186,14 @@ def scan():
         alive = {ip for ip, ok in zip(hosts, ex.map(ping, hosts)) if ok}
     # second, patient pass on devices seen in the last day that didn't answer the quick ping
     with lock:
-        sleepy = sorted({ip for d in devices.values() if now - d.get("last_seen", 0) < 86400
+        sleepy = sorted({ip for d in devices.values() if now - d.get("last_seen", 0) < 86400 and on_current_net(d)
                          for ip in (d.get("ips") or [d.get("ip")]) if ip} - alive)
     if sleepy:
         with ThreadPoolExecutor(max_workers=32) as ex:
             alive |= {ip for ip, ok in zip(sleepy, ex.map(lambda ip: ping(ip, True), sleepy)) if ok}
     # known open TCP ports: proof of life for devices that drop pings
     with lock:
-        knock = [(ip, p) for d in devices.values() if now - d.get("last_seen", 0) < 86400
+        knock = [(ip, p) for d in devices.values() if now - d.get("last_seen", 0) < 86400 and on_current_net(d)
                  for ip in (d.get("ips") or [d.get("ip")]) if ip and ip not in alive
                  for p in ((d.get("probe") or {}).get("ports") or [])[:2]]
     with ThreadPoolExecutor(max_workers=32) as ex:
@@ -349,6 +381,14 @@ def probe():
                 continue
             p = d.setdefault("probe", {})
             if ip in need:
+                if p.get("ports") and not r.get("ports"):
+                    # silent now but not before: a firewall on this side (e.g. a router seen
+                    # from its WAN), the earlier findings still describe the device
+                    r = {k: v for k, v in r.items() if k not in ("ports", "http")}
+                    d["firewalled"] = True
+                    d["always_on"] = always_on(d)
+                else:
+                    d.pop("firewalled", None)
                 p.update(r)
                 d["probed_at"] = int(now)
                 d["probed_ip"] = ip
@@ -415,6 +455,8 @@ def events():
     with lock:
         quiet = state.pop("quiet_events", False)  # fresh install: learn the network silently
         for key, d in devices.items():
+            if not on_current_net(d):
+                continue  # the host changed network: the device didn't go offline
             if d.get("alias_of"):
                 continue  # same phone under another private MAC: its primary record speaks for it
             prev = d.get("notified")
@@ -556,7 +598,8 @@ class Handler(BaseHTTPRequestHandler):
                     "probing": state["probing"],
                     "types": identify.TYPES,
                     "ntfy": notify.target(DATA_DIR),
-                    "devices": [public(k, d) for k, d in devices.items() if not d.get("alias_of")],
+                    "devices": [public(k, d) for k, d in devices.items()
+                                if not d.get("alias_of") and on_current_net(d)],
                 }
             return self.send(200, json.dumps(payload))
         self.send(404, '{"error":"not found"}')
@@ -580,18 +623,9 @@ def main():
     ap.add_argument("--interval", type=int, default=int(os.environ.get("LANMAN_INTERVAL", 60)))
     a = ap.parse_args()
 
-    iface = a.iface or detect_iface()
-    if not iface:
-        raise SystemExit("cannot detect interface, use --iface")
-    addrs = own_ips(iface)
-    if not addrs:
-        raise SystemExit("no IPv4 address on %s" % iface)
-    net = addrs[0].network
-    if net.num_addresses > 1024:  # don't sweep huge subnets
-        net = ipaddress.ip_network("%s/22" % addrs[0].ip, strict=False)
-    wireless = os.path.exists("/sys/class/net/%s/wireless" % iface) or os.path.exists("/sys/class/net/%s/phy80211" % iface)
-    state.update(iface=iface, network=net, self_ip=str(addrs[0].ip), gateway=gateway(iface), host_wired=not wireless)
-    LOCAL["link"] = "wifi" if wireless else "wired"
+    state["iface_forced"] = a.iface
+    if not refresh_network():
+        raise SystemExit("no IPv4 network found, use --iface")
 
     if a.pair:
         raise SystemExit(0 if freebox.pair(state["gateway"], fbx.path) else 1)
@@ -602,7 +636,7 @@ def main():
     threading.Thread(target=dhcp_listener, daemon=True).start()
     threading.Thread(target=scanner, args=(a.interval,), daemon=True).start()
     print("lanman on http://%s:%d  (%s, %s, gw %s, ntfy %s)" % (
-        a.bind, a.port, iface, net, state["gateway"], notify.target(DATA_DIR) or "off"), flush=True)
+        a.bind, a.port, state["iface"], state["network"], state["gateway"], notify.target(DATA_DIR) or "off"), flush=True)
     ThreadingHTTPServer((a.bind, a.port), Handler).serve_forever()
 
 

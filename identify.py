@@ -35,7 +35,7 @@ TYPES = [
     ("unknown", "Sconosciuti"),
 ]
 TYPE_KEYS = [k for k, _ in TYPES]
-PROBE_VERSION = 7  # bump when probes change: cached devices get re-identified
+PROBE_VERSION = 8  # bump when probes change: cached devices get re-identified
 TYPE_NOUNS = {
     "router": "router", "vpn": "client VPN", "server": "server", "computer": "computer", "mobile": "smartphone/tablet",
     "media": "dispositivo multimediale", "printer": "stampante", "camera": "telecamera",
@@ -547,7 +547,25 @@ WEB_HINTS = [
     (r"tplinkdeco\.net", "tplink-deco"),
     (r"tplinkwifi\.net|tplinklogin\.net|tplinkap\.net", "tplink-router"),
     (r"ecos\.js", "ecos-wifi"),
+    (r"(?s)name=\"csrf_token\".*/html/index\.html", "huawei-hilink"),
 ]
+
+
+def hilink_device_block(ip, port=80):
+    """Model and firmware from the public API of Huawei HiLink routers (B525, B535,
+    E5xxx, ...). No login needed, read only."""
+    try:
+        c = http.client.HTTPConnection(ip, port, timeout=3)
+        c.request("GET", "/api/device/basic_information", headers={"User-Agent": "lanman", "Host": ip})
+        body = c.getresponse().read(8192).decode("utf-8", "replace")
+        c.close()
+    except Exception:
+        return None
+    f = dict(re.findall(r"<(\w+)>([^<]+)</\1>", body))
+    if not f.get("devicename"):
+        return None
+    return {"name": "Huawei " + f["devicename"], "brand": "Huawei", "model": f["devicename"],
+            "firmware": f.get("SoftwareVersion")}
 
 
 def tplink_device_block(ip, port=80):
@@ -743,6 +761,8 @@ def probe(self_ip, all_ips, targets, measure_rtt=False):
                 r["device_info"] = tplink_device_block(ip, arg)
             elif r and r.get("hint") == "ecos-wifi":
                 r["device_info"] = ecos_device_block(ip, arg)
+            elif r and r.get("hint") == "huawei-hilink":
+                r["device_info"] = hilink_device_block(ip, arg)
             return job, r
         return job, (http_info(ip, arg) if kind == "http" else upnp_describe(ip, arg))
 
@@ -1117,6 +1137,9 @@ def classify(d, vendor):
         brand = "TP-Link"
         model = {"tplink-extender": "range extender", "tplink-deco": "Deco mesh"}.get(next(iter(hints)))
         vote("router", 10)
+    elif "huawei-hilink" in hints:
+        brand = "Huawei"
+        vote("router", 10)
     local = p.get("local") or {}
     if local:
         brand, model = local.get("brand"), local.get("model")
@@ -1180,6 +1203,11 @@ def classify(d, vendor):
             if re.search(rx, low):
                 for t, w in votes:
                     vote(t, w)
+    # Huawei also makes routers: phones don't serve DNS, and the name the upstream
+    # router's DNS gives such a device (often a recycled "android-x") says nothing
+    huawei_router = bool(vendor and "huawei" in vendor.lower() and 53 in ports)
+    if huawei_router:
+        vote("router", 8)
     router = d.get("router") or {}
     rname = (d.get("dhcp") or {}).get("hostname") or router.get("name")
     rtype = freebox.HOST_TYPES.get(router.get("host_type"))
@@ -1187,7 +1215,8 @@ def classify(d, vendor):
         vote(rtype, 10)  # type known to the router (Freebox host_type)
     if not vendor and router.get("vendor"):
         vendor = router["vendor"]
-    names = [x for x in (d.get("hostname"), mdns.get("hostname"), nb.get("name"), upnp.get("friendlyName"),
+    hostname = None if huawei_router else d.get("hostname")
+    names = [x for x in (hostname, mdns.get("hostname"), nb.get("name"), upnp.get("friendlyName"),
                          gc.get("fn"), rname) if x]
     names += list((mdns.get("instances") or {}).values())
     joined = " ".join(names).lower()
@@ -1281,7 +1310,7 @@ def classify(d, vendor):
                  or next((v for k, v in (mdns.get("instances") or {}).items()
                           if k in ("_device-info._tcp", "_companion-link._tcp", "_airplay._tcp", "_googlecast._tcp",
                                    "_ipp._tcp", "_hap._tcp", "_smb._tcp", "_workstation._tcp")), None)
-                 or rname or _clean_host(d.get("hostname")) or _clean_host(mdns.get("hostname")) or nb.get("name"))
+                 or rname or _clean_host(hostname) or _clean_host(mdns.get("hostname")) or nb.get("name"))
     if auto_name and "_workstation._tcp" in (mdns.get("instances") or {}):
         auto_name = re.sub(r"\s*\[[0-9a-f:]{17}\]$", "", auto_name)
     noun = TYPE_NOUNS[type_]
