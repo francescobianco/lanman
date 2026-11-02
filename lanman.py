@@ -388,6 +388,8 @@ def probe():
             if not d:
                 continue
             p = d.setdefault("probe", {})
+            if r.get("mdns"):
+                r = dict(r, mdns=identify.merge_mdns(p.get("mdns"), r["mdns"], int(now)))
             if ip in need:
                 if p.get("ports") and not r.get("ports"):
                     # silent now but not before: a firewall on this side (e.g. a router seen

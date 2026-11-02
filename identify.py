@@ -35,7 +35,7 @@ TYPES = [
     ("unknown", "Sconosciuti"),
 ]
 TYPE_KEYS = [k for k, _ in TYPES]
-PROBE_VERSION = 8  # bump when probes change: cached devices get re-identified
+PROBE_VERSION = 9  # bump when probes change: cached devices get re-identified
 TYPE_NOUNS = {
     "router": "router", "vpn": "client VPN", "server": "server", "computer": "computer", "mobile": "smartphone/tablet",
     "media": "dispositivo multimediale", "printer": "stampante", "camera": "telecamera",
@@ -373,6 +373,32 @@ def mdns_browse(self_ip, ips):
 # some devices ignore ssdp:all and only answer their own search target (Fire TV: DIAL)
 SSDP_TARGETS = ["ssdp:all", "upnp:rootdevice", "urn:dial-multiscreen-org:service:dial:1",
                 "urn:schemas-upnp-org:device:MediaRenderer:1"]
+
+
+MDNS_KEEP = 30 * 86400
+
+
+def merge_mdns(old, new, now):
+    """Devices answer each mDNS round with a different subset of their services (a Fire TV
+    alternates Matter and AirPlay): add to what is known, forget a service only after a long silence."""
+    old = old or {}
+    seen = dict(old.get("seen") or {})
+    for svc in old.get("services") or []:
+        seen.setdefault(svc, now)  # records saved before services were dated
+    for svc in new.get("services") or []:
+        seen[svc] = now
+    seen = {svc: ts for svc, ts in seen.items() if now - ts < MDNS_KEEP}
+    host = new.get("hostname")
+    if not host or (old.get("hostname") and re.fullmatch(r"[0-9a-f]{12}", host, re.I)):
+        host = old.get("hostname")  # a bare MAC address is no better than the name we have
+    return {
+        "hostname": host,
+        "services": sorted(seen),
+        "instances": {k: v for k, v in dict(old.get("instances") or {}, **(new.get("instances") or {})).items()
+                      if k in seen},
+        "txt": {k: v for k, v in dict(old.get("txt") or {}, **(new.get("txt") or {})).items() if k in seen},
+        "seen": seen,
+    }
 
 
 def ssdp_search(self_ip, ips=(), timeout=3):
@@ -1339,6 +1365,7 @@ def classify(d, vendor):
     if not brand and nb.get("name") and 3389 in ports:
         brand = "Windows"
     auto_name = (gc.get("fn") or upnp.get("friendlyName") or di.get("name")
+                 or (txt.get("_matterd._udp") or {}).get("dn")  # the name set by the user on the device
                  or next((v for k, v in (mdns.get("instances") or {}).items()
                           if k in ("_device-info._tcp", "_companion-link._tcp", "_airplay._tcp", "_googlecast._tcp",
                                    "_ipp._tcp", "_hap._tcp", "_smb._tcp", "_workstation._tcp")), None)
