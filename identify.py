@@ -30,13 +30,12 @@ TYPES = [
     ("mobile", "Smartphone e tablet"),
     ("media", "TV e multimedia"),
     ("printer", "Stampanti"),
-    ("camera", "Telecamere"),
     ("iot", "Domotica e IoT"),
     ("console", "Console"),
     ("unknown", "Sconosciuti"),
 ]
 TYPE_KEYS = [k for k, _ in TYPES]
-PROBE_VERSION = 6  # bump when probes change: cached devices get re-identified
+PROBE_VERSION = 7  # bump when probes change: cached devices get re-identified
 TYPE_NOUNS = {
     "router": "router", "vpn": "client VPN", "server": "server", "computer": "computer", "mobile": "smartphone/tablet",
     "media": "dispositivo multimediale", "printer": "stampante", "camera": "telecamera",
@@ -547,6 +546,7 @@ WEB_HINTS = [
     (r"tplinkrepeater\.net", "tplink-extender"),
     (r"tplinkdeco\.net", "tplink-deco"),
     (r"tplinkwifi\.net|tplinklogin\.net|tplinkap\.net", "tplink-router"),
+    (r"ecos\.js", "ecos-wifi"),
 ]
 
 
@@ -573,6 +573,22 @@ def tplink_device_block(ip, port=80):
         "name": f.get("fullName"), "brand": f.get("facturer"), "model": f.get("modelName"),
         "model_ver": f.get("modelVer"), "hardware": f.get("hardVer"), "firmware": f.get("softVer"),
     }.items() if v}
+
+
+def ecos_device_block(ip, port=80):
+    """OEM eCos "WiFi Manager" web UIs (e.g. STRONG repeaters): the root page is a
+    generic frameset, brand and model are in the public login page's title string."""
+    try:
+        c = http.client.HTTPConnection(ip, port, timeout=3)
+        c.request("GET", "/login.html", headers={"User-Agent": "lanman", "Host": ip})
+        text = c.getresponse().read(65536).decode("utf-8", "replace")
+        c.close()
+    except Exception:
+        return None
+    m = re.search(r'lang_TitleInfo1\[\d+\]\s*=\s*"([^"<]+)<br\s*/?>\s*([^"<]+)"', text, re.I)
+    if not m:
+        return None
+    return {"brand": html.unescape(m.group(1)).strip(), "model": html.unescape(m.group(2)).strip()}
 
 
 # ------------------------------------------------------------ round trip ---
@@ -725,6 +741,8 @@ def probe(self_ip, all_ips, targets, measure_rtt=False):
             r = http_info(ip, arg)
             if r and (r.get("hint") or "").startswith("tplink"):
                 r["device_info"] = tplink_device_block(ip, arg)
+            elif r and r.get("hint") == "ecos-wifi":
+                r["device_info"] = ecos_device_block(ip, arg)
             return job, r
         return job, (http_info(ip, arg) if kind == "http" else upnp_describe(ip, arg))
 
@@ -1014,6 +1032,7 @@ NAME_TYPES = [
      r"roomba|dyson|thermostat|smart", [("iot", 5)]),
     (r"playstation|ps4|ps5|xbox|nintendo", [("console", 6)]),
     (r"fritz|router|gateway|repeater|\bmesh|openwrt|unifi|access.?point", [("router", 6)]),
+    (r"rtthread", [("camera", 3)]),  # RT-Thread RTOS: mostly cheap IP cameras, low confidence
 ]
 HTTP_TYPES = [
     (r"fritz!(box|repeater|powerline)|routeros|mikrotik|openwrt|luci|unifi|router|modem|gateway", ("router", 8)),
@@ -1172,8 +1191,10 @@ def classify(d, vendor):
                          gc.get("fn"), rname) if x]
     names += list((mdns.get("instances") or {}).values())
     joined = " ".join(names).lower()
+    # without the DNS suffix: any client's "host.fritz.box" must not look like a FRITZ! device
+    bare_names = " ".join(_clean_host(n) or "" for n in names).lower()
     for rx, votes in NAME_TYPES:
-        if re.search(rx, joined):
+        if re.search(rx, bare_names):
             for t, w in votes:
                 vote(t, w)
     fire = re.search(r"\b(?:\w+-)?(AFT[A-Z0-9]{1,6})\b", " ".join(names + [upnp.get("modelName") or ""]))
@@ -1251,7 +1272,9 @@ def classify(d, vendor):
         type_, best = max(score.items(), key=lambda kv: kv[1])
     else:
         type_, best = "unknown", 0
-    brand = brand or short_brand(vendor)
+    # cheap RT-Thread devices ship with a MAC from an unrelated OUI: it says nothing about the brand
+    if not (vendor and "rtthread" in bare_names and "hitachi denshi" in vendor.lower()):
+        brand = brand or short_brand(vendor)
     if not brand and nb.get("name") and 3389 in ports:
         brand = "Windows"
     auto_name = (gc.get("fn") or upnp.get("friendlyName") or di.get("name")
@@ -1262,6 +1285,8 @@ def classify(d, vendor):
     if auto_name and "_workstation._tcp" in (mdns.get("instances") or {}):
         auto_name = re.sub(r"\s*\[[0-9a-f:]{17}\]$", "", auto_name)
     noun = TYPE_NOUNS[type_]
+    if type_ == "camera":  # cameras keep their noun but are listed under home automation
+        type_ = "iot"
     if brand and model:
         fallback = model if model.lower().startswith(brand.lower()) else "%s %s" % (brand, model)
     elif brand or model:
