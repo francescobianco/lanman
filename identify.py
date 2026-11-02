@@ -871,12 +871,17 @@ def os_guess(p, apple_model, fire, names, ports, vendor):
                         (r"rosssh", "MikroTik RouterOS"), (r"dropbear", "Linux embedded")):
         if re.search(rx, ssh, re.I):
             return os_name
-    blob = " ".join("%s %s" % (h.get("server") or "", h.get("title") or "") for h in p.get("http") or [])
+    http = p.get("http") or []
+    blob = " ".join("%s %s" % (h.get("server") or "", h.get("title") or "") for h in http)
     for rx, os_name in ((r"fritz!", "FRITZ!OS"), (r"synology|diskstation", "Synology DSM"),
-                        (r"\(ubuntu\)", "Ubuntu"), (r"\(debian\)", "Debian"), (r"\(raspbian\)", "Raspberry Pi OS"),
                         (r"win32|win64|microsoft-iis", "Windows"), (r"routeros", "MikroTik RouterOS"),
                         (r"openwrt|luci", "OpenWrt")):
         if re.search(rx, blob, re.I):
+            return os_name
+    # a distro tag on 8080 & co. is usually a container's (php:apache is Debian): it says nothing about the host
+    host_blob = " ".join(h.get("server") or "" for h in http if h.get("port") in (80, 443))
+    for rx, os_name in ((r"\(ubuntu\)", "Ubuntu"), (r"\(debian\)", "Debian"), (r"\(raspbian\)", "Raspberry Pi OS")):
+        if re.search(rx, host_blob, re.I):
             return os_name
     if vendor and re.search(r"synology", vendor, re.I):
         return "Synology DSM"
@@ -888,6 +893,8 @@ def os_guess(p, apple_model, fire, names, ports, vendor):
         return "Android"
     if (p.get("netbios") or {}).get("name") and (3389 in ports or 445 in ports) and 22 not in ports:
         return "Windows"
+    if re.search(r"\((?:ubuntu|debian|raspbian)\)", blob, re.I):
+        return "Linux"
     return None
 
 
@@ -956,6 +963,27 @@ NAME_MODELS = [
     (r"(iphone(?:[-_ ]?\d+)?(?:[-_ ]?(?:pro|max|mini|plus))*)", "Apple", "%s"),
     (r"(ipad(?:[-_ ]?(?:pro|air|mini))?)", "Apple", "%s"),
 ]
+
+
+# OEM / network chip makers: their MAC prefix ends up in other brands' machines, so it says nothing about the brand
+NIC_MAKERS = (r"hon hai|foxconn|cloud network technology|fugui|liteon|lite-on|azurewave|intel corporate|realtek|"
+              r"murata|mediatek|qualcomm|broadcom")
+# brands in device names ("hp", "hp2", "DELL-Latitude", "thinkpad-t14", "Brother HL-L1240W")
+NAME_BRANDS = [
+    (r"hp|elitebook|probook|zbook|elitedesk|prodesk|pavilion", "HP"),
+    (r"dell|latitude|inspiron|optiplex|alienware", "Dell"),
+    (r"lenovo|thinkpad|thinkcentre|thinkbook|ideapad|yoga", "Lenovo"),
+    (r"asus|zenbook|vivobook", "ASUS"), (r"acer|aspire", "Acer"), (r"msi", "MSI"),
+    (r"brother", "Brother"), (r"epson", "Epson"), (r"canon", "Canon"),
+]
+
+
+def name_brand(names):
+    for n in names:
+        for rx, brand in NAME_BRANDS:
+            if re.search(r"(?:^|[-_. ])(?:%s)(?=$|[-_. \d])" % rx, n, re.I):
+                return brand
+    return None
 
 
 def name_model(names):
@@ -1303,7 +1331,11 @@ def classify(d, vendor):
         type_, best = "unknown", 0
     # cheap RT-Thread devices ship with a MAC from an unrelated OUI: it says nothing about the brand
     if not (vendor and "rtthread" in bare_names and "hitachi denshi" in vendor.lower()):
-        brand = brand or short_brand(vendor)
+        nic_maker = vendor and re.search(NIC_MAKERS, vendor, re.I)
+        if not vendor or nic_maker:
+            brand = brand or name_brand(names)
+        if not nic_maker:
+            brand = brand or short_brand(vendor)
     if not brand and nb.get("name") and 3389 in ports:
         brand = "Windows"
     auto_name = (gc.get("fn") or upnp.get("friendlyName") or di.get("name")
